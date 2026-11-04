@@ -50,7 +50,8 @@ impl From<&SiteRecord> for SiteView {
     }
 }
 
-/// 登录结果：完成，或者需要验证码（login：登录时的两步验证；token：创建个人访问令牌时再验证一次）。
+/// 登录结果：完成；或者需要验证码（login：登录时的两步验证；token：创建个人访问令牌时再验证一次）；
+/// 或者需要再输一次密码（在登录窗口里登录的 new-api 站点，创建个人访问令牌时要用）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum LoginOutcome {
@@ -61,6 +62,26 @@ pub enum LoginOutcome {
     NeedCode {
         flow_id: String,
         stage: CodeStage,
+    },
+    #[serde(rename_all = "camelCase")]
+    NeedPassword {
+        flow_id: String,
+    },
+}
+
+/// 在登录窗口里登录后取到的登录状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSession {
+    /// 新版 new-api：刷新令牌 cookie 的值。
+    NewapiRefresh(String),
+    /// 旧版 new-api：会话 cookie（`session=…`）和用户 ID。
+    NewapiLegacy { cookie: String, user_id: String },
+    /// sub2api：网页存的令牌和账号，以及登录窗口的 User-Agent。
+    Sub2api {
+        access_token: String,
+        refresh_token: String,
+        account: String,
+        user_agent: String,
     },
 }
 
@@ -80,6 +101,11 @@ enum Pending {
         legacy_cookie: Option<String>,
     },
     TokenCode {
+        info: SiteInfo,
+        account: String,
+        access_token: String,
+    },
+    TokenPassword {
         info: SiteInfo,
         account: String,
         access_token: String,
@@ -143,6 +169,10 @@ impl Accounts {
             .ok_or(SiteError::SessionExpired)?;
         let code = code.trim();
         match pending {
+            pending @ Pending::TokenPassword { .. } => {
+                self.put_pending(flow_id, pending);
+                Err(SiteError::SessionExpired)
+            }
             Pending::LoginCode {
                 info,
                 account,
@@ -210,6 +240,79 @@ impl Accounts {
         }
     }
 
+    /// 在登录窗口里登录完成：把取到的登录状态变成凭证。new-api 新版还要创建个人访问令牌，
+    /// 一般需要再输一次密码（返回 NeedPassword）。
+    pub async fn finish_web_login(
+        &self,
+        mut info: SiteInfo,
+        session: WebSession,
+    ) -> Result<LoginOutcome, SiteError> {
+        match session {
+            WebSession::NewapiRefresh(refresh) => {
+                let (access_token, account) =
+                    newapi::access_from_refresh(&self.http, &info, &refresh).await?;
+                let step =
+                    newapi::create_token(&self.http, &info, &access_token, None, None).await?;
+                self.advance(info, &account, None, step)
+            }
+            WebSession::NewapiLegacy { cookie, user_id } => {
+                let step = newapi::legacy_from_session(&self.http, &info, cookie, user_id).await?;
+                self.advance(info, "", None, step)
+            }
+            WebSession::Sub2api {
+                access_token,
+                refresh_token,
+                account,
+                user_agent,
+            } => {
+                info.user_agent = Some(user_agent);
+                let step = LoginStep::Done {
+                    credential: Credential::Sub2api {
+                        access_token,
+                        refresh_token,
+                    },
+                    account: account.clone(),
+                };
+                self.advance(info, &account, None, step)
+            }
+        }
+    }
+
+    /// 提交密码（创建个人访问令牌时的验证）。密码错了可以再试。
+    pub async fn submit_password(
+        &self,
+        flow_id: &str,
+        password: &str,
+    ) -> Result<LoginOutcome, SiteError> {
+        let pending = self
+            .take_pending(flow_id)
+            .ok_or(SiteError::SessionExpired)?;
+        let Pending::TokenPassword {
+            info,
+            account,
+            access_token,
+        } = pending
+        else {
+            self.put_pending(flow_id, pending);
+            return Err(SiteError::SessionExpired);
+        };
+        match newapi::create_token(&self.http, &info, &access_token, Some(password), None).await {
+            Ok(step) => self.advance(info, &account, Some(password), step),
+            Err(error @ SiteError::BadCredentials(_)) => {
+                self.put_pending(
+                    flow_id,
+                    Pending::TokenPassword {
+                        info,
+                        account,
+                        access_token,
+                    },
+                );
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn cancel(&self, flow_id: &str) {
         self.take_pending(flow_id);
     }
@@ -254,6 +357,17 @@ impl Accounts {
                     flow_id,
                     stage: CodeStage::Login,
                 })
+            }
+            LoginStep::NeedTokenPassword { access_token } => {
+                self.put_pending(
+                    &flow_id,
+                    Pending::TokenPassword {
+                        info,
+                        account: account.to_string(),
+                        access_token,
+                    },
+                );
+                Ok(LoginOutcome::NeedPassword { flow_id })
             }
             LoginStep::NeedTokenCode { access_token } => {
                 self.put_pending(
@@ -439,7 +553,10 @@ impl Accounts {
         op: impl for<'a> Fn(&'a Http, &'a SiteInfo, &'a Credential) -> SiteFuture<'a, T>,
     ) -> Result<T, SiteError> {
         let (record, credential) = self.load(id)?;
-        match op(&self.http, &record.info, &credential).await {
+        // 在登录窗口里登录的站点，用那个窗口的 User-Agent。
+        let site_http = record.info.user_agent.as_deref().map(Http::with_user_agent);
+        let http = site_http.as_ref().unwrap_or(&self.http);
+        match op(http, &record.info, &credential).await {
             Err(SiteError::SessionExpired) if record.info.platform == Platform::Sub2api => {
                 let refreshed = {
                     let _guard = self.refresh_lock.lock().await;
@@ -448,13 +565,12 @@ impl Accounts {
                     if latest != credential {
                         latest
                     } else {
-                        let refreshed =
-                            sub2api::refresh(&self.http, &record.info, &credential).await?;
+                        let refreshed = sub2api::refresh(http, &record.info, &credential).await?;
                         self.store_credential(id, &refreshed)?;
                         refreshed
                     }
                 };
-                op(&self.http, &record.info, &refreshed).await
+                op(http, &record.info, &refreshed).await
             }
             result => result,
         }
@@ -690,6 +806,40 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn web_login_keeps_the_login_window_user_agent() {
+        let server = MockServer::start().await;
+        let dir = std::env::temp_dir().join(format!("transitlink-web-{}", std::process::id()));
+        let accounts = accounts(&dir);
+        // 站点把会话绑定到登录时的 User-Agent：以后的请求必须用登录窗口的 User-Agent。
+        Mock::given(method("GET"))
+            .and(path("/api/v1/auth/me"))
+            .and(header("Authorization", "Bearer web-at"))
+            .and(header("User-Agent", "Mozilla/5.0 WebView"))
+            .respond_with(ok(json!({ "email": "a@example.com", "balance": 1.5 })))
+            .mount(&server)
+            .await;
+
+        let outcome = accounts
+            .finish_web_login(
+                site_info(&server.uri()),
+                WebSession::Sub2api {
+                    access_token: "web-at".into(),
+                    refresh_token: "web-rt".into(),
+                    account: "a@example.com".into(),
+                    user_agent: "Mozilla/5.0 WebView".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let LoginOutcome::Done { site } = outcome else {
+            panic!("done expected")
+        };
+        assert_eq!(site.account, "a@example.com");
+        assert_eq!(accounts.account(&site.id).await.unwrap().balance_usd, 1.5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn site_info(base_url: &str) -> SiteInfo {
         SiteInfo {
             platform: Platform::Sub2api,
@@ -701,6 +851,7 @@ mod tests {
             email_only: true,
             quota_per_unit: None,
             password_encryption: false,
+            user_agent: None,
         }
     }
 }

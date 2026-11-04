@@ -44,6 +44,7 @@ pub async fn fetch_site(http: &Http, base_url: &str) -> Result<Option<SiteInfo>,
         email_only: true,
         quota_per_unit: None,
         password_encryption: false,
+        user_agent: None,
     }))
 }
 

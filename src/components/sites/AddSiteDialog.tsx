@@ -1,20 +1,37 @@
 import { useEffect, useState, type SubmitEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { LoaderCircle, ShieldAlert } from "lucide-react";
+import { ExternalLink, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Field, Input } from "../ui/input";
 import { SiteAvatar } from "./SiteAvatar";
-import { cancelLogin, detectSite, isPreview, loginSite, submitLoginCode, type SiteInfo, type SiteView } from "../../lib/api";
+import {
+  cancelLogin,
+  cancelWebLogin,
+  detectSite,
+  isCommandError,
+  isPreview,
+  loginSite,
+  submitLoginCode,
+  submitLoginPassword,
+  webLogin,
+  type LoginOutcome,
+  type SiteInfo,
+  type SiteView,
+} from "../../lib/api";
 import { errorText } from "../../lib/errors";
 
 type Step =
   | { kind: "url" }
   | { kind: "login"; info: SiteInfo }
-  | { kind: "code"; info: SiteInfo; flowId: string; stage: "login" | "token" };
+  | { kind: "code"; info: SiteInfo; flowId: string; stage: "login" | "token" }
+  | { kind: "password"; info: SiteInfo; flowId: string };
 
-/** 接入站点：输入网址 → 识别 → 账号密码登录 → （需要时）两步验证码。 */
+/**
+ * 接入站点：输入网址 → 识别 → 账号密码登录 → （需要时）两步验证码。
+ * 开了人机验证的站点改为在登录窗口里登录（站点自己的登录页），new-api 之后再输一次密码创建长期令牌。
+ */
 export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onClose, onAdded }: {
   open: boolean;
   initialUrl?: string;
@@ -29,6 +46,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [waitingWeb, setWaitingWeb] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,6 +57,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     setPassword("");
     setCode("");
     setError(null);
+    setWaitingWeb(false);
   }, [open, initialUrl, initialAccount]);
 
   const run = async (action: () => Promise<void>) => {
@@ -54,8 +73,29 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
   };
 
   const close = () => {
-    if (step.kind === "code") void cancelLogin(step.flowId);
+    if (step.kind === "code" || step.kind === "password") void cancelLogin(step.flowId);
+    if (waitingWeb) void cancelWebLogin();
     onClose();
+  };
+
+  /** 登录（或下一步）的结果：完成，或者转到验证码、密码步骤。 */
+  const handle = (info: SiteInfo, outcome: LoginOutcome) => {
+    if (outcome.status === "done") finish(outcome.site);
+    else if (outcome.status === "needPassword") setStep({ kind: "password", info, flowId: outcome.flowId });
+    else setStep({ kind: "code", info, flowId: outcome.flowId, stage: outcome.stage });
+  };
+
+  const onWebLogin = async (info: SiteInfo) => {
+    setWaitingWeb(true);
+    setError(null);
+    try {
+      handle(info, await webLogin(info.baseUrl));
+    } catch (caught) {
+      // 用户自己关掉了登录窗口：回到按钮，不算出错。
+      if (!(isCommandError(caught) && caught.code === "loginCancelled")) setError(errorText(t, caught));
+    } finally {
+      setWaitingWeb(false);
+    }
   };
 
   const finish = (site: SiteView) => {
@@ -71,11 +111,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
   const onLogin = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (step.kind !== "login") return;
-    void run(async () => {
-      const outcome = await loginSite(step.info.baseUrl, account, password);
-      if (outcome.status === "done") finish(outcome.site);
-      else setStep({ kind: "code", info: step.info, flowId: outcome.flowId, stage: outcome.stage });
-    });
+    void run(async () => handle(step.info, await loginSite(step.info.baseUrl, account, password)));
   };
 
   const onCode = (event: SubmitEvent<HTMLFormElement>) => {
@@ -84,9 +120,14 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     void run(async () => {
       const outcome = await submitLoginCode(step.flowId, code);
       setCode("");
-      if (outcome.status === "done") finish(outcome.site);
-      else setStep({ ...step, flowId: outcome.flowId, stage: outcome.stage });
+      handle(step.info, outcome);
     });
+  };
+
+  const onPassword = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (step.kind !== "password") return;
+    void run(async () => handle(step.info, await submitLoginPassword(step.flowId, password)));
   };
 
   return (
@@ -106,9 +147,38 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
 
       {step.kind !== "url" && <SiteHeader info={step.info} />}
 
-      {step.kind === "login" && (
+      {step.kind === "login" && step.info.captchaRequired && (
+        <div className="mt-4 space-y-4">
+          <p className="flex gap-2 rounded-lg bg-muted p-3 text-sm" role="status">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden />
+            {t("sites.add.captchaRequired")}
+          </p>
+          {isPreview && <p className="text-xs text-muted-foreground">{t("sites.add.previewWebHint")}</p>}
+          {error && <ErrorLine text={error} />}
+          {waitingWeb ? (
+            <div className="flex items-center gap-3 rounded-lg border border-border p-3 text-sm">
+              <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+              <span className="flex-1">{t("sites.add.waitingWeb")}</span>
+              <Button variant="ghost" size="sm" onClick={() => void cancelWebLogin()}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setStep({ kind: "url" })}>
+                {t("common.back")}
+              </Button>
+              <Button className="flex-1" onClick={() => void onWebLogin(step.info)}>
+                <ExternalLink className="h-4 w-4" aria-hidden />
+                {t("sites.add.openLoginWindow")}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {step.kind === "login" && !step.info.captchaRequired && (
         <form onSubmit={onLogin} className="mt-4 space-y-4">
-          {step.info.captchaRequired && <Notice text={t("sites.add.captchaRequired")} />}
           {step.info.passwordLoginDisabled && <Notice text={t("sites.add.passwordLoginDisabled")} />}
           <Field label={step.info.emailOnly ? t("sites.add.email") : t("sites.add.account")} htmlFor="site-account">
             <Input id="site-account" value={account} onChange={(event) => setAccount(event.target.value)} type={step.info.emailOnly ? "email" : "text"} autoComplete="username" autoFocus required />
@@ -122,11 +192,25 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
             <Button variant="secondary" onClick={() => setStep({ kind: "url" })} disabled={busy}>
               {t("common.back")}
             </Button>
-            <Button type="submit" className="flex-1" disabled={busy || step.info.captchaRequired || step.info.passwordLoginDisabled}>
+            <Button type="submit" className="flex-1" disabled={busy || step.info.passwordLoginDisabled}>
               {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
               {t("sites.add.login")}
             </Button>
           </div>
+        </form>
+      )}
+
+      {step.kind === "password" && (
+        <form onSubmit={onPassword} className="mt-4 space-y-4">
+          <p className="text-sm text-muted-foreground">{t("sites.add.tokenPasswordHint")}</p>
+          <Field label={t("sites.add.password")} htmlFor="site-token-password">
+            <Input id="site-token-password" value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" autoFocus required />
+          </Field>
+          {error && <ErrorLine text={error} />}
+          <Button type="submit" className="w-full" disabled={busy || !password}>
+            {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
+            {t("sites.add.verify")}
+          </Button>
         </form>
       )}
 

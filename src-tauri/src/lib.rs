@@ -16,6 +16,8 @@ mod store;
 mod tools;
 #[cfg(desktop)]
 mod tray;
+#[cfg(desktop)]
+mod webauth;
 
 #[cfg(desktop)]
 use tauri::Manager;
@@ -95,6 +97,9 @@ pub fn run() {
             commands::login_site,
             commands::submit_login_code,
             commands::cancel_login,
+            commands::web_login,
+            commands::cancel_web_login,
+            commands::submit_login_password,
             commands::list_sites,
             commands::remove_site,
             commands::site_account,

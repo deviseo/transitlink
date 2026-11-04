@@ -299,6 +299,56 @@ pub async fn submit_login_code(
     Ok(outcome)
 }
 
+/// 开了人机验证的站点：打开站点自己的登录页，等用户登录完成。
+#[tauri::command]
+pub async fn web_login(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    settings: State<'_, SettingsStore>,
+    url: String,
+) -> CommandResult<LoginOutcome> {
+    #[cfg(desktop)]
+    {
+        let info = accounts.detect(&url).await?;
+        let title = if settings.get().language.starts_with("zh") {
+            format!("登录 {}", info.name)
+        } else {
+            format!("Sign in to {}", info.name)
+        };
+        let session = crate::webauth::capture(&app, &info, &title).await?;
+        let outcome = accounts.finish_web_login(info, session).await?;
+        refresh_tray(&app);
+        Ok(outcome)
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, accounts, settings, url);
+        Err(SiteError::CaptchaRequired.into())
+    }
+}
+
+/// 关掉登录窗口（在应用里点了取消）。
+#[tauri::command]
+pub fn cancel_web_login(app: AppHandle) {
+    #[cfg(desktop)]
+    crate::webauth::close(&app);
+    #[cfg(not(desktop))]
+    let _ = app;
+}
+
+/// 提交密码：在登录窗口里登录的 new-api 站点，创建个人访问令牌时要再验证一次。
+#[tauri::command]
+pub async fn submit_login_password(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    flow_id: String,
+    password: String,
+) -> CommandResult<LoginOutcome> {
+    let outcome = accounts.submit_password(&flow_id, &password).await?;
+    refresh_tray(&app);
+    Ok(outcome)
+}
+
 #[tauri::command]
 pub fn cancel_login(accounts: State<'_, Accounts>, flow_id: String) {
     accounts.cancel(&flow_id);

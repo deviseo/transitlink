@@ -128,6 +128,7 @@ mod tests {
                 email_only: false,
                 quota_per_unit: Some(500000.0),
                 password_encryption: false,
+                user_agent: None,
             },
             account: account.into(),
             added_at: 1,

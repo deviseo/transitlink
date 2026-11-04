@@ -61,6 +61,7 @@ fn fixture(server: &MockServer, name: &str) -> Fixture {
         email_only: true,
         quota_per_unit: None,
         password_encryption: false,
+        user_agent: None,
     };
     let credential = Credential::Sub2api {
         access_token: "at".into(),
@@ -456,6 +457,7 @@ async fn switches_configured_tools_between_sites() {
                 email_only: true,
                 quota_per_unit: None,
                 password_encryption: false,
+                user_agent: None,
             },
             "a@example.com",
             &Credential::Sub2api {

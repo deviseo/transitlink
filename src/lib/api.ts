@@ -91,7 +91,9 @@ export interface SiteView {
 
 export type LoginOutcome =
   | { status: "done"; site: SiteView }
-  | { status: "needCode"; flowId: string; stage: "login" | "token" };
+  | { status: "needCode"; flowId: string; stage: "login" | "token" }
+  /** 在登录窗口里登录的 new-api 站点：创建长期令牌要再输一次密码。 */
+  | { status: "needPassword"; flowId: string };
 
 export interface AccountSummary {
   name: string;
@@ -167,7 +169,8 @@ export const detectTools = () => call<ToolOverview[]>("detect_tools", () => prev
 export const detectSite = (url: string) =>
   call<SiteInfo>("detect_site", () => {
     if (!url.includes(".")) previewError("invalidUrl");
-    return { platform: "newapi", baseUrl: `https://${url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")}`, name: "示例中转站", logoUrl: null, captchaRequired: false, passwordLoginDisabled: false, emailOnly: false };
+    // 预览：网址里带 captcha 的当作开了人机验证的站点。
+    return { platform: "newapi", baseUrl: `https://${url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")}`, name: "示例中转站", logoUrl: null, captchaRequired: url.includes("captcha"), passwordLoginDisabled: false, emailOnly: false };
   }, { url });
 
 export const loginSite = (url: string, account: string, password: string) =>
@@ -188,6 +191,25 @@ export const submitLoginCode = (flowId: string, code: string) =>
   }, { flowId, code });
 
 export const cancelLogin = (flowId: string) => call<void>("cancel_login", () => undefined, { flowId });
+
+/** 开了人机验证的站点：打开站点自己的登录页，等用户在里面登录完成。预览时 1.5 秒后当作登录完成。 */
+export const webLogin = (url: string) =>
+  call<LoginOutcome>("web_login", async () => {
+    await pause(1500);
+    return { status: "needPassword", flowId: "preview-web" };
+  }, { url });
+
+/** 关掉登录窗口。 */
+export const cancelWebLogin = () => call<null>("cancel_web_login", () => null);
+
+/** 提交密码（创建长期令牌前的验证）。预览时密码填 wrong 演示错误。 */
+export const submitLoginPassword = (flowId: string, password: string) =>
+  call<LoginOutcome>("submit_login_password", () => {
+    if (password === "wrong") previewError("badCredentials");
+    const site = { ...previewSite, account: "web-user" };
+    previewSites.splice(0, previewSites.length, site);
+    return { status: "done", site };
+  }, { flowId, password });
 
 export const listSites = () => call<SiteView[]>("list_sites", () => [...previewSites]);
 

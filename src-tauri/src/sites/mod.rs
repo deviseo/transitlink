@@ -36,6 +36,10 @@ pub struct SiteInfo {
     /// new-api：登录密码需要加密提交。
     #[serde(default)]
     pub password_encryption: bool,
+    /// 在登录窗口里登录的站点：记下那个窗口的 User-Agent，以后的请求都用它
+    /// （sub2api 可以把会话绑定到登录时的 IP 和 User-Agent）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 /// 返回给前端的错误：`code` 对应界面文案，`message` 是站点自己返回的说明（可能为空）。
@@ -51,6 +55,8 @@ pub enum SiteError {
     UnsupportedVerification,
     RateLimited,
     SessionExpired,
+    /// 用户关掉了登录窗口（或者太久没登录完）。
+    LoginCancelled,
     TokenNotAllowed(Option<String>),
     Site(Option<String>),
     Unexpected(String),
@@ -69,6 +75,7 @@ impl SiteError {
             SiteError::UnsupportedVerification => "unsupportedVerification",
             SiteError::RateLimited => "rateLimited",
             SiteError::SessionExpired => "sessionExpired",
+            SiteError::LoginCancelled => "loginCancelled",
             SiteError::TokenNotAllowed(_) => "tokenNotAllowed",
             SiteError::Site(_) => "site",
             SiteError::Unexpected(_) => "unexpected",
@@ -119,6 +126,8 @@ pub enum LoginStep {
     },
     /// new-api 创建个人访问令牌时需要一个新的两步验证码。
     NeedTokenCode { access_token: String },
+    /// new-api 创建个人访问令牌时需要再输一次密码（在登录窗口里登录的，我们没有密码）。
+    NeedTokenPassword { access_token: String },
 }
 
 /// 账号概况。余额统一换算成美元。

@@ -20,11 +20,18 @@ pub struct JsonResponse {
     pub body: Option<Value>,
 }
 
+/// 默认的 User-Agent。固定不变：sub2api 可以把会话绑定到 User-Agent，变了会被要求重新登录。
+pub const USER_AGENT: &str = concat!("TransitLink/", env!("CARGO_PKG_VERSION"));
+
 impl Http {
     pub fn new() -> Self {
+        Self::with_user_agent(USER_AGENT)
+    }
+
+    /// 用指定的 User-Agent（在登录窗口里登录的站点，用那个窗口的 User-Agent）。
+    pub fn with_user_agent(user_agent: &str) -> Self {
         let builder = reqwest::Client::builder()
-            // 固定 User-Agent：sub2api 可以把会话绑定到 User-Agent，变了会被要求重新登录。
-            .user_agent(concat!("TransitLink/", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(25));
         #[cfg(test)]

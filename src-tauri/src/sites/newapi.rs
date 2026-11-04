@@ -23,6 +23,8 @@ const TOKEN_SCOPES: [&str; 6] = [
     "wallet:read",
 ];
 const TOKEN_SCOPE_NAME: &str = "access_token.generate";
+/// 新版网页登录后留下的刷新令牌 cookie（Path 是 `/api/user/auth`）。
+pub const REFRESH_COOKIE: &str = "new_api_refresh";
 const DEFAULT_QUOTA_PER_UNIT: f64 = 500_000.0;
 
 /// 读取 /api/status 识别 new-api。不是 new-api 时返回 None。
@@ -59,6 +61,7 @@ pub async fn fetch_site(http: &Http, base_url: &str) -> Result<Option<SiteInfo>,
             .filter(|value| *value > 0.0)
             .or(Some(DEFAULT_QUOTA_PER_UNIT)),
         password_encryption: flag(data, "password_login_encryption_enabled"),
+        user_agent: None,
     }))
 }
 
@@ -172,6 +175,46 @@ fn legacy_done(data: &Value, cookie: String) -> Result<LoginStep, SiteError> {
     })
 }
 
+/// 在登录窗口里登录后，用网页留下的刷新令牌（`new_api_refresh` cookie）换一个访问令牌。
+/// 返回（访问令牌, 账号名）。刷新令牌用一次就换新，所以调用前要先关掉登录窗口。
+pub async fn access_from_refresh(
+    http: &Http,
+    info: &SiteInfo,
+    refresh: &str,
+) -> Result<(String, String), SiteError> {
+    let request = http
+        .post(&format!("{}/api/user/auth/refresh", info.base_url))
+        .header("Cookie", format!("{REFRESH_COOKIE}={refresh}"))
+        // 站点会核对请求来源，和站点自己的网页一样带上它的地址。
+        .header("Origin", &info.base_url);
+    let data = data_of(http.send(request).await?).map_err(|error| match error {
+        SiteError::Site(_) => SiteError::SessionExpired,
+        other => other,
+    })?;
+    let access_token =
+        text(&data, "access_token").ok_or_else(|| SiteError::Unexpected("access_token".into()))?;
+    let account = data
+        .get("user")
+        .and_then(|user| text(user, "username").or_else(|| text(user, "email")))
+        .unwrap_or_default();
+    Ok((access_token, account))
+}
+
+/// 旧版在登录窗口里登录后：用会话 cookie 和用户 ID 组成凭证，顺便读出账号名。
+pub async fn legacy_from_session(
+    http: &Http,
+    info: &SiteInfo,
+    cookie: String,
+    user_id: String,
+) -> Result<LoginStep, SiteError> {
+    let credential = Credential::NewapiLegacy { cookie, user_id };
+    let (_, data) = self_info(http, &info.base_url, &credential).await?;
+    Ok(LoginStep::Done {
+        account: text(&data, "username").unwrap_or_default(),
+        credential,
+    })
+}
+
 /// 提交登录时的两步验证码。新版用 flow_token，旧版用登录 cookie。
 pub async fn verify_login_code(
     http: &Http,
@@ -257,11 +300,19 @@ pub async fn create_token(
                 verify[key] = value.clone();
             }
         }
+        // 在登录窗口里登录的：我们没有密码，优先请用户再输一次密码，没有密码方式再要验证码。
+        (None, None) if available("password") => {
+            return Ok(LoginStep::NeedTokenPassword {
+                access_token: access_token.to_string(),
+            });
+        }
         _ if available("2fa") => {
             return Ok(LoginStep::NeedTokenCode {
                 access_token: access_token.to_string(),
             });
         }
+        // 只能用 Passkey、第三方登录等方式验证。
+        (None, None) => return Err(SiteError::UnsupportedVerification),
         _ => return Err(SiteError::TokenNotAllowed(None)),
     }
 
@@ -626,6 +677,109 @@ mod tests {
         .unwrap();
         assert_eq!(summary.balance_usd, 2.0);
         assert_eq!(summary.group.as_deref(), Some("default"));
+    }
+
+    #[tokio::test]
+    async fn web_login_refresh_then_password_creates_a_token() {
+        let server = MockServer::start().await;
+        let info = site(
+            &server,
+            json!({ "system_name": "S", "quota_per_unit": 500000, "turnstile_check": true }),
+        )
+        .await;
+        assert!(info.captcha_required);
+        Mock::given(method("POST"))
+            .and(path("/api/user/auth/refresh"))
+            .and(header("Cookie", "new_api_refresh=sid.secret"))
+            .and(header("Origin", server.uri().as_str()))
+            .respond_with(ok(
+                json!({ "access_token": "jwt-web", "user": { "id": 7, "username": "alice" } }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/api/verify/methods")).and(header("Authorization", "Bearer jwt-web"))
+            .respond_with(ok(json!({ "methods": [{ "method": "password", "available": true }, { "method": "2fa", "available": true }] })))
+            .mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/verify"))
+            .and(body_partial_json(
+                json!({ "method": "password", "password": "pw" }),
+            ))
+            .respond_with(ok(json!({ "proof_token": "proof-web" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/user/access_tokens"))
+            .and(header("X-Security-Proof", "proof-web"))
+            .respond_with(ok(json!({ "token": "nap_web" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/user/self"))
+            .and(header("Authorization", "Bearer nap_web"))
+            .respond_with(ok(json!({ "id": 7, "username": "alice", "quota": 0 })))
+            .mount(&server)
+            .await;
+
+        let http = Http::new();
+        let (access_token, account) = access_from_refresh(&http, &info, "sid.secret")
+            .await
+            .unwrap();
+        assert_eq!(
+            (access_token.as_str(), account.as_str()),
+            ("jwt-web", "alice")
+        );
+        // 有密码方式时先要密码（不用等验证器刷新）。
+        assert_eq!(
+            create_token(&http, &info, &access_token, None, None)
+                .await
+                .unwrap(),
+            LoginStep::NeedTokenPassword {
+                access_token: "jwt-web".into()
+            }
+        );
+        assert_eq!(
+            create_token(&http, &info, &access_token, Some("pw"), None)
+                .await
+                .unwrap(),
+            LoginStep::Done {
+                credential: Credential::NewapiToken {
+                    token: "nap_web".into()
+                },
+                account: "alice".into()
+            }
+        );
+
+        // 只能用 Passkey 验证的账号：明确告诉用户不支持。
+        Mock::given(method("GET"))
+            .and(path("/api/verify/methods"))
+            .and(header("Authorization", "Bearer jwt-passkey"))
+            .respond_with(ok(
+                json!({ "methods": [{ "method": "passkey", "available": true }] }),
+            ))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            create_token(&http, &info, "jwt-passkey", None, None)
+                .await
+                .unwrap_err(),
+            SiteError::UnsupportedVerification
+        );
+        // 刷新令牌失效（站点回 401）：需要重新登录。
+        Mock::given(method("POST"))
+            .and(path("/api/user/auth/refresh"))
+            .and(header("Cookie", "new_api_refresh=stale"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(
+                json!({ "success": false, "code": "AUTH_REFRESH_INVALID", "message": "Unauthorized" }),
+            ))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            access_from_refresh(&http, &info, "stale")
+                .await
+                .unwrap_err(),
+            SiteError::SessionExpired
+        );
     }
 
     #[tokio::test]
