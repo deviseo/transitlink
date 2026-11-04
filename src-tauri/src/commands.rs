@@ -11,6 +11,9 @@ use crate::settings::{AppSettings, SettingsStore};
 use crate::siteconfig::{self, SiteConfig};
 use crate::sites::http::Http;
 use crate::sites::{AccountSummary, GroupSummary, KeySummary, SiteError, SiteInfo};
+use crate::tickets::{
+    ImageUpload, NewTicket, TicketDetail, TicketError, TicketList, TicketSession, Tickets,
+};
 use crate::tools::ToolKind;
 use crate::{paths, tools};
 
@@ -55,6 +58,15 @@ impl From<ConfigError> for CommandError {
         CommandError {
             code: code.to_string(),
             message,
+        }
+    }
+}
+
+impl From<TicketError> for CommandError {
+    fn from(error: TicketError) -> Self {
+        CommandError {
+            code: error.code().to_string(),
+            message: error.message(),
         }
     }
 }
@@ -414,10 +426,16 @@ pub fn list_sites(accounts: State<'_, Accounts>) -> CommandResult<Vec<SiteView>>
     Ok(accounts.sites()?)
 }
 
-/// 删除站点：同时删掉钥匙串里的凭证。
+/// 删除站点：同时删掉钥匙串里的凭证和内存里的工单会话。
 #[tauri::command]
-pub fn remove_site(app: AppHandle, accounts: State<'_, Accounts>, id: String) -> CommandResult<()> {
+pub fn remove_site(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    id: String,
+) -> CommandResult<()> {
     accounts.remove(&id)?;
+    tickets.forget(&id);
     refresh_tray(&app);
     Ok(())
 }
@@ -469,4 +487,93 @@ pub async fn create_site_key(
     group: Option<String>,
 ) -> CommandResult<KeySummary> {
     Ok(accounts.create_key(&id, &name, group.as_deref()).await?)
+}
+
+/// 用户确认专属链接里的 TransitHub 是站长的：以后打开工单时，才把站点的登录交给它核实身份。
+#[tauri::command]
+pub fn ticket_allow(accounts: State<'_, Accounts>, site_id: String) -> CommandResult<SiteView> {
+    Ok(accounts.allow_ticket_hub(&site_id)?)
+}
+
+/// 工单会话：站点上的用户、问题分类和图片限制。第一次调用时用站点的登录换一个工单会话
+/// （会话令牌留在 Rust 侧，不交给网页）。
+#[tauri::command]
+pub async fn ticket_session(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+) -> CommandResult<TicketSession> {
+    Ok(tickets.session_info(&accounts, &site_id).await?)
+}
+
+/// 我在这个站点提过的工单，和有新回复的工单数。
+#[tauri::command]
+pub async fn tickets_list(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+) -> CommandResult<TicketList> {
+    Ok(tickets.list(&accounts, &site_id).await?)
+}
+
+/// 工单详情（打开后客服的回复记为已读）。
+#[tauri::command]
+pub async fn ticket_detail(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+    ticket_id: String,
+) -> CommandResult<TicketDetail> {
+    Ok(tickets.detail(&accounts, &site_id, &ticket_id).await?)
+}
+
+/// 新建工单。图片是 base64，最多 5 张、每张 5 MB。
+#[tauri::command]
+pub async fn ticket_create(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+    draft: NewTicket,
+    images: Vec<ImageUpload>,
+) -> CommandResult<TicketDetail> {
+    Ok(tickets.create(&accounts, &site_id, draft, images).await?)
+}
+
+/// 追问（可以只发图片）。
+#[tauri::command]
+pub async fn ticket_reply(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+    ticket_id: String,
+    body: String,
+    images: Vec<ImageUpload>,
+) -> CommandResult<TicketDetail> {
+    Ok(tickets
+        .reply(&accounts, &site_id, &ticket_id, &body, images)
+        .await?)
+}
+
+/// 关闭工单。
+#[tauri::command]
+pub async fn ticket_close(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+    ticket_id: String,
+) -> CommandResult<TicketDetail> {
+    Ok(tickets.close(&accounts, &site_id, &ticket_id).await?)
+}
+
+/// 消息里的一张图片，返回 `data:` 地址。
+#[tauri::command]
+pub async fn ticket_attachment(
+    accounts: State<'_, Accounts>,
+    tickets: State<'_, Tickets>,
+    site_id: String,
+    attachment_id: String,
+) -> CommandResult<String> {
+    Ok(tickets
+        .attachment(&accounts, &site_id, &attachment_id)
+        .await?)
 }

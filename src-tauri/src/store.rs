@@ -23,6 +23,10 @@ pub struct SiteRecord {
     pub config: Option<SiteConfig>,
     #[serde(default)]
     pub config_fetched_at: u64,
+    /// 用户同意过的工单服务地址（站长的 TransitHub）。打开工单要把站点的登录凭证发给它核实身份，
+    /// 所以第一次、或者专属链接换了地址时，要用户先确认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_hub: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -143,6 +147,7 @@ mod tests {
             config_url: None,
             config: None,
             config_fetched_at: 0,
+            ticket_hub: None,
         }
     }
 

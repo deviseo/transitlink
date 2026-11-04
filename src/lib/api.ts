@@ -90,6 +90,8 @@ export interface SiteConfig {
   support: { type: string; label: string; value: string }[];
   /** 对客户端本身的要求：minVersion 是最低版本，空表示不限制（旧版本保存的配置里没有这一项）。 */
   client?: { minVersion: string };
+  /** 站长有没有开工单（旧版本保存的配置里没有这一项，当作没开）。 */
+  tickets?: { enabled: boolean };
 }
 
 /** 专属链接读到的内容：配置地址和站长配置。 */
@@ -107,6 +109,10 @@ export interface SiteView {
   account: string;
   addedAt: number;
   config: SiteConfig | null;
+  /** 专属链接里站长的 TransitHub 地址（不带协议），请用户同意用工单前给他看。 */
+  ticketsHost: string | null;
+  /** 用户已经同意把这个站点的登录交给这个 TransitHub 核实身份；同意前不发任何工单请求。 */
+  ticketsAllowed: boolean;
 }
 
 export type LoginOutcome =
@@ -159,6 +165,8 @@ const previewSite: SiteView = {
   account: "demo",
   addedAt: 0,
   config: null,
+  ticketsHost: null,
+  ticketsAllowed: false,
 };
 const previewConfig: SiteConfig = {
   site: { name: "示例中转站", baseUrl: "https://relay.example.com", platform: "newapi" },
@@ -169,6 +177,7 @@ const previewConfig: SiteConfig = {
     { type: "telegram", label: "Telegram 群", value: "https://t.me/example" },
     { type: "qq", label: "QQ 群", value: "123456789" },
   ],
+  tickets: { enabled: true },
 };
 const previewSites: SiteView[] = [];
 const previewKeys: KeySummary[] = [
@@ -397,6 +406,274 @@ export const refreshSiteLinks = () => call<boolean>("refresh_site_links", () => 
 
 /** 取走等着处理的专属链接（应用被链接打开，或运行中点了链接）。 */
 export const takePendingLink = () => call<string | null>("take_pending_link", () => null);
+
+// —— 工单（用专属链接接入、站长开了工单的站点才有） ——
+
+/** 工单状态：open 等客服回复；pending 追问后等客服回复；replied 客服回复了；closed 已关闭。 */
+export type TicketStatus = "open" | "pending" | "replied" | "closed";
+
+/** 工单会话：站点上的用户、问题分类和图片限制（会话令牌留在桌面端，不进网页）。 */
+export interface TicketSession {
+  user: { id: string; name: string; email: string };
+  categories: string[];
+  limits: { enabled: boolean; maxImages: number; maxImageBytes: number };
+}
+
+export interface TicketSummary {
+  id: string;
+  title: string;
+  category: string;
+  status: TicketStatus;
+  contact: string;
+  /** 客服回复了、还没看。 */
+  unread: boolean;
+  lastMessageAt: string;
+  createdAt: string;
+}
+
+export interface TicketList {
+  items: TicketSummary[];
+  /** 有新回复的工单数。 */
+  unread: number;
+}
+
+export interface TicketAttachment {
+  id: string;
+  originalName: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface TicketMessage {
+  id: string;
+  /** customer 是用户自己，admin 是客服。 */
+  authorType: "customer" | "admin";
+  authorName: string;
+  body: string;
+  createdAt: string;
+  attachments: TicketAttachment[];
+}
+
+export interface TicketDetail extends TicketSummary {
+  messages: TicketMessage[];
+}
+
+/** 新建工单时填的内容。 */
+export interface TicketDraft {
+  title: string;
+  category: string;
+  body: string;
+  contact: string;
+}
+
+/** 要上传的图片：文件名和 base64 内容。 */
+export interface ImageUpload {
+  name: string;
+  dataBase64: string;
+}
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+/** 预览用的截图：SVG 画的终端窗口，最后一行用 accent 颜色。 */
+function previewScreenshot(lines: string[], accent: string): string {
+  const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const rows = lines
+    .map((line, index) => `<text x="28" y="${76 + index * 28}" fill="${index === lines.length - 1 ? accent : "#d4d4d8"}">${escape(line)}</text>`)
+    .join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="680" height="${100 + lines.length * 28}" font-family="Menlo, Consolas, monospace" font-size="16"><rect width="100%" height="100%" rx="14" fill="#18181b"/><circle cx="28" cy="26" r="7" fill="#f87171"/><circle cx="50" cy="26" r="7" fill="#fbbf24"/><circle cx="72" cy="26" r="7" fill="#4ade80"/>${rows}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+const previewTicketImages = new Map<string, string>([
+  ["att-401", previewScreenshot(["$ claude", "> 帮我看看这个函数为什么报错", "", "API Error: 401", "该令牌无权访问模型 claude-opus-5-5"], "#f87171")],
+  ["att-topup", previewScreenshot(["订单号   20261103-8842", "金额     ¥100.00", "支付状态 支付成功", "", "账户余额 $0.00（未到账）"], "#fbbf24")],
+]);
+
+const previewTicketSession: TicketSession = {
+  user: { id: "1", name: "demo", email: "demo@example.com" },
+  categories: ["通用问题", "余额/计费", "接口调用", "账号/登录"],
+  limits: { enabled: true, maxImages: 5, maxImageBytes: 5 * 1024 * 1024 },
+};
+
+const previewTickets: TicketDetail[] = [
+  {
+    id: "t-401",
+    title: "Claude Code 提示 401，用不了",
+    category: "接口调用",
+    status: "replied",
+    contact: "",
+    unread: true,
+    lastMessageAt: minutesAgo(12),
+    createdAt: minutesAgo(95),
+    messages: [
+      {
+        id: "m-401-1",
+        authorType: "customer",
+        authorName: "demo",
+        body: "今天早上开始，Claude Code 一发消息就报 401。Key 是 TransitLink 一键配置的，昨天还好好的，截图在下面。",
+        createdAt: minutesAgo(95),
+        attachments: [{ id: "att-401", originalName: "报错截图.png", contentType: "image/png", sizeBytes: 182_000, createdAt: minutesAgo(95) }],
+      },
+      {
+        id: "m-401-2",
+        authorType: "admin",
+        authorName: "",
+        body: "您好，看截图是 Key 所在的 default 分组没有 Claude 模型的权限。我们昨晚调整了分组，Claude 模型都移到了 claude 分组。\n\n在 TransitLink 的「工具」页点「重新配置」，分组选 claude 就可以了，原来的配置会自动备份。",
+        createdAt: minutesAgo(12),
+        attachments: [],
+      },
+    ],
+  },
+  {
+    id: "t-topup",
+    title: "充值后余额没到账",
+    category: "余额/计费",
+    status: "open",
+    contact: "QQ 123456",
+    unread: false,
+    lastMessageAt: minutesAgo(60 * 26),
+    createdAt: minutesAgo(60 * 26),
+    messages: [
+      {
+        id: "m-topup-1",
+        authorType: "customer",
+        authorName: "demo",
+        body: "昨晚 10 点左右充值了 100 元，支付成功了，但余额一直是 0。订单截图附上。",
+        createdAt: minutesAgo(60 * 26),
+        attachments: [{ id: "att-topup", originalName: "订单.png", contentType: "image/png", sizeBytes: 96_000, createdAt: minutesAgo(60 * 26) }],
+      },
+    ],
+  },
+  {
+    id: "t-timeout",
+    title: "晚上高峰期 Codex 偶尔超时",
+    category: "接口调用",
+    status: "pending",
+    contact: "",
+    unread: false,
+    lastMessageAt: minutesAgo(60 * 50),
+    createdAt: minutesAgo(60 * 75),
+    messages: [
+      { id: "m-timeout-1", authorType: "customer", authorName: "demo", body: "晚上 9 点到 11 点，Codex 经常卡一两分钟才返回，有时候直接超时。", createdAt: minutesAgo(60 * 75), attachments: [] },
+      { id: "m-timeout-2", authorType: "admin", authorName: "", body: "您好，晚高峰上游比较拥堵，我们已经加了一条线路。现在还会这样吗？", createdAt: minutesAgo(60 * 60), attachments: [] },
+      { id: "m-timeout-3", authorType: "customer", authorName: "demo", body: "好一些了，但还是偶尔会超时，大概十次有一次。", createdAt: minutesAgo(60 * 50), attachments: [] },
+    ],
+  },
+  {
+    id: "t-invoice",
+    title: "可以开发票吗",
+    category: "余额/计费",
+    status: "closed",
+    contact: "billing@example.com",
+    unread: false,
+    lastMessageAt: minutesAgo(60 * 24 * 9),
+    createdAt: minutesAgo(60 * 24 * 10),
+    messages: [
+      { id: "m-invoice-1", authorType: "customer", authorName: "demo", body: "公司报销需要发票，可以开吗？", createdAt: minutesAgo(60 * 24 * 10), attachments: [] },
+      { id: "m-invoice-2", authorType: "admin", authorName: "", body: "可以的，把抬头和税号发到 billing@example.com，3 个工作日内开好。", createdAt: minutesAgo(60 * 24 * 9), attachments: [] },
+    ],
+  },
+];
+
+/** 预览时用的站点：还没接入开了工单的站点时，工单页用它显示示例工单。 */
+export const previewTicketSite: SiteView = { ...previewSite, config: previewConfig, ticketsHost: "hub.example.com", ticketsAllowed: true };
+
+function previewSummary(ticket: TicketDetail): TicketSummary {
+  const { id, title, category, status, contact, unread, lastMessageAt, createdAt } = ticket;
+  return { id, title, category, status, contact, unread, lastMessageAt, createdAt };
+}
+
+function previewTicket(ticketId: string): TicketDetail {
+  const ticket = previewTickets.find((item) => item.id === ticketId);
+  if (!ticket) previewError("ticketsNotFound");
+  return ticket;
+}
+
+/** 预览时把选的图片记下来，按 base64 开头认出格式。 */
+function previewAttachments(images: ImageUpload[]): TicketAttachment[] {
+  return images.map((image, index) => {
+    const id = `att-${Date.now()}-${index}`;
+    const type = image.dataBase64.startsWith("/9j/") ? "image/jpeg" : image.dataBase64.startsWith("R0lGOD") ? "image/gif" : image.dataBase64.startsWith("UklGR") ? "image/webp" : "image/png";
+    previewTicketImages.set(id, `data:${type};base64,${image.dataBase64}`);
+    return { id, originalName: image.name, contentType: type, sizeBytes: Math.floor((image.dataBase64.length * 3) / 4), createdAt: new Date().toISOString() };
+  });
+}
+
+/** 同意把这个站点的登录交给专属链接里的 TransitHub 核实身份（用工单前问一次，链接换了地址要重新同意）。 */
+export const allowTickets = (siteId: string) => call<SiteView>("ticket_allow", () => ({ ...previewTicketSite, ticketsAllowed: true }), { siteId });
+
+/** 工单会话：问题分类、图片限制和站点上的用户。第一次调用时桌面端用站点的登录换一个工单会话。 */
+export const ticketSession = (siteId: string) => call<TicketSession>("ticket_session", () => structuredClone(previewTicketSession), { siteId });
+
+/** 我在这个站点提过的工单（最近更新的在前），和有新回复的工单数。 */
+export const listTickets = (siteId: string) =>
+  call<TicketList>("tickets_list", async () => {
+    await pause(300);
+    const items = [...previewTickets].sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt)).map(previewSummary);
+    return { items, unread: items.filter((item) => item.unread).length };
+  }, { siteId });
+
+/** 工单详情；打开后客服的回复就算看过了。 */
+export const ticketDetail = (siteId: string, ticketId: string) =>
+  call<TicketDetail>("ticket_detail", async () => {
+    await pause(300);
+    const ticket = previewTicket(ticketId);
+    ticket.unread = false;
+    return structuredClone(ticket);
+  }, { siteId, ticketId });
+
+/** 新建工单。图片最多 5 张、每张 5 MB。 */
+export const createTicket = (siteId: string, draft: TicketDraft, images: ImageUpload[]) =>
+  call<TicketDetail>("ticket_create", async () => {
+    await pause(600);
+    if (!draft.title.trim() || !draft.body.trim()) previewError("ticketsInvalid");
+    const now = new Date().toISOString();
+    const ticket: TicketDetail = {
+      id: `t-${Date.now()}`,
+      title: draft.title.trim(),
+      category: draft.category || previewTicketSession.categories[0],
+      status: "open",
+      contact: draft.contact.trim(),
+      unread: false,
+      lastMessageAt: now,
+      createdAt: now,
+      messages: [{ id: `m-${Date.now()}`, authorType: "customer", authorName: "demo", body: draft.body.trim(), createdAt: now, attachments: previewAttachments(images) }],
+    };
+    previewTickets.unshift(ticket);
+    return structuredClone(ticket);
+  }, { siteId, draft, images });
+
+/** 追问（可以只发图片）。工单关闭后不能再回复。 */
+export const replyTicket = (siteId: string, ticketId: string, body: string, images: ImageUpload[]) =>
+  call<TicketDetail>("ticket_reply", async () => {
+    await pause(500);
+    const ticket = previewTicket(ticketId);
+    if (ticket.status === "closed") previewError("ticketsClosed");
+    const now = new Date().toISOString();
+    ticket.messages.push({ id: `m-${Date.now()}`, authorType: "customer", authorName: "demo", body: body.trim(), createdAt: now, attachments: previewAttachments(images) });
+    ticket.lastMessageAt = now;
+    if (ticket.status === "replied") ticket.status = "pending";
+    return structuredClone(ticket);
+  }, { siteId, ticketId, body, images });
+
+/** 关闭工单（问题解决了）。 */
+export const closeTicket = (siteId: string, ticketId: string) =>
+  call<TicketDetail>("ticket_close", async () => {
+    await pause(300);
+    const ticket = previewTicket(ticketId);
+    ticket.status = "closed";
+    return structuredClone(ticket);
+  }, { siteId, ticketId });
+
+/** 消息里的一张图片（`data:` 地址）。 */
+export const ticketAttachment = (siteId: string, attachmentId: string) =>
+  call<string>("ticket_attachment", async () => {
+    await pause(200);
+    const image = previewTicketImages.get(attachmentId);
+    if (!image) previewError("ticketsNotFound");
+    return image;
+  }, { siteId, attachmentId });
 
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;

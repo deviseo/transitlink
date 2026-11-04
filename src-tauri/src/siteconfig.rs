@@ -19,6 +19,8 @@ pub struct SiteConfig {
     pub notice: ConfigNotice,
     pub support: Vec<ConfigSupport>,
     pub client: ConfigClient,
+    /// 工单开关（以前保存的配置里没有这一项，读出来是关着的）。
+    pub tickets: ConfigTickets,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -80,6 +82,13 @@ pub struct ConfigClient {
     pub min_version: String,
 }
 
+/// 站长有没有开工单。问题分类等细节在换取工单会话时才给。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConfigTickets {
+    pub enabled: bool,
+}
+
 /// 是不是 X.Y.Z 形式的版本号。
 fn is_version(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
@@ -108,7 +117,7 @@ pub fn config_url_from(input: &str) -> Option<String> {
 }
 
 /// 配置地址只接受 https；本机测试（localhost、127.0.0.1）可以用 http。
-fn allowed(url: &url::Url) -> bool {
+pub(crate) fn allowed(url: &url::Url) -> bool {
     match url.scheme() {
         "https" => url.host_str().is_some(),
         "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
@@ -254,6 +263,7 @@ mod tests {
                 "notice": { "content": "周六维护", "updatedAt": "2026-11-04T08:00:00Z" },
                 "support": [{ "type": "telegram", "label": "TG", "value": "https://t.me/x" }, { "type": "qq", "label": "空", "value": " " }],
                 "client": { "minVersion": "v0.2.0" },
+                "tickets": { "enabled": true },
                 "future": { "ignored": true }
             })))
             .mount(&server)
@@ -289,6 +299,7 @@ mod tests {
         assert_eq!(config.recommend.codex.model, "gpt-6.1-sol");
         assert_eq!(config.support.len(), 1);
         assert_eq!(config.client.min_version, "0.2.0");
+        assert!(config.tickets.enabled);
         assert_eq!(
             fetch(&http, &format!("{base}/api/client/v1/sites/gone"))
                 .await
@@ -334,5 +345,18 @@ mod tests {
         assert_eq!(clean.brand.logo_url, "");
         assert_eq!(clean.brand.color, "");
         assert_eq!(clean.client.min_version, "", "only X.Y.Z versions are kept");
+    }
+
+    #[test]
+    fn configs_saved_before_tickets_still_load() {
+        // 旧版本存下的配置没有 tickets：照样能读，工单是关着的。
+        let saved = json!({
+            "site": { "name": "S", "baseUrl": "https://relay.example.com", "platform": "newapi" },
+            "brand": { "name": "B", "logoUrl": "", "color": "", "welcome": "" },
+            "client": { "minVersion": "" }
+        });
+        let config: SiteConfig = serde_json::from_value(saved).unwrap();
+        assert!(!config.tickets.enabled);
+        assert_eq!(config.brand.name, "B");
     }
 }

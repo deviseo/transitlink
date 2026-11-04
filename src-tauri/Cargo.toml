@@ -26,7 +26,8 @@ tauri-plugin-deep-link = "2"
 dirs = "7"
 which = "8"
 url = "2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy"] }
+# multipart：工单里上传图片。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy", "multipart"] }
 # new-api 登录密码加密（RSA-OAEP + AES-256-GCM），版本需互相匹配。
 rsa = "0.9"
 sha2 = "0.10"

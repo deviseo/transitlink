@@ -1,7 +1,7 @@
 import type { HTMLAttributes } from "react";
 import { cn } from "../../lib/cn";
 
-type Tone = "neutral" | "success" | "danger" | "brand";
+export type Tone = "neutral" | "success" | "danger" | "brand";
 
 const tones: Record<Tone, string> = {
   neutral: "bg-muted text-muted-foreground",

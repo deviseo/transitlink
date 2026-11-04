@@ -14,6 +14,7 @@ mod settings;
 mod siteconfig;
 mod sites;
 mod store;
+mod tickets;
 mod tools;
 #[cfg(desktop)]
 mod tray;
@@ -53,10 +54,14 @@ pub fn run() {
 
     let settings = settings::SettingsStore::load(paths::app_data_dir().join("settings.json"));
 
+    // 工单：会话只放在内存里。
+    let tickets = tickets::Tickets::new(sites::http::Http::new());
+
     builder
         .manage(accounts)
         .manage(configurator)
         .manage(settings)
+        .manage(tickets)
         .manage(commands::PendingLink::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -127,6 +132,14 @@ pub fn run() {
             commands::attach_site_link,
             commands::refresh_site_links,
             commands::take_pending_link,
+            commands::ticket_allow,
+            commands::ticket_session,
+            commands::tickets_list,
+            commands::ticket_detail,
+            commands::ticket_create,
+            commands::ticket_reply,
+            commands::ticket_close,
+            commands::ticket_attachment,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TransitLink")

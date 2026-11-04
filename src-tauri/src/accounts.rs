@@ -37,6 +37,10 @@ pub struct SiteView {
     pub added_at: u64,
     /// 站长的配置（用专属链接接入的站点才有）。
     pub config: Option<SiteConfig>,
+    /// 专属链接里 TransitHub 的地址（不带协议），请用户同意前给他看。
+    pub tickets_host: Option<String>,
+    /// 用户已经同意把这个站点的登录交给专属链接里的 TransitHub 核实身份（才能用工单）。
+    pub tickets_allowed: bool,
 }
 
 impl From<&SiteRecord> for SiteView {
@@ -50,6 +54,11 @@ impl From<&SiteRecord> for SiteView {
             account: record.account.clone(),
             added_at: record.added_at,
             config: record.config.clone(),
+            tickets_host: record
+                .config_url
+                .as_deref()
+                .and_then(crate::tickets::hub_host),
+            tickets_allowed: crate::tickets::hub_allowed(record),
         }
     }
 }
@@ -428,6 +437,7 @@ impl Accounts {
                 config_url: None,
                 config: None,
                 config_fetched_at: 0,
+                ticket_hub: None,
             },
         };
         self.store_credential(&record.id, credential)?;
@@ -440,7 +450,8 @@ impl Accounts {
         self.secrets.set(id, &json).map_err(storage)
     }
 
-    fn load(&self, id: &str) -> Result<(SiteRecord, Credential), SiteError> {
+    /// 站点记录和钥匙串里的凭证。
+    pub(crate) fn load(&self, id: &str) -> Result<(SiteRecord, Credential), SiteError> {
         let record = self
             .store
             .get(id)
@@ -469,6 +480,19 @@ impl Accounts {
         record.config_url = Some(config_url.to_string());
         record.config = Some(config);
         record.config_fetched_at = crate::clock::now_secs();
+        self.store.upsert(record.clone()).map_err(storage)?;
+        Ok(SiteView::from(&record))
+    }
+
+    /// 用户确认专属链接里的 TransitHub 是站长的：记下它的地址，以后打开工单时才把站点的登录交给它核实身份。
+    pub fn allow_ticket_hub(&self, id: &str) -> Result<SiteView, SiteError> {
+        let mut record = self.site(id)?;
+        let hub = record
+            .config_url
+            .as_deref()
+            .and_then(crate::tickets::hub_base)
+            .ok_or(SiteError::LinkInvalid)?;
+        record.ticket_hub = Some(hub);
         self.store.upsert(record.clone()).map_err(storage)?;
         Ok(SiteView::from(&record))
     }
@@ -595,27 +619,40 @@ impl Accounts {
         op: impl for<'a> Fn(&'a Http, &'a SiteInfo, &'a Credential) -> SiteFuture<'a, T>,
     ) -> Result<T, SiteError> {
         let (record, credential) = self.load(id)?;
-        // 在登录窗口里登录的站点，用那个窗口的 User-Agent。
-        let site_http = record.info.user_agent.as_deref().map(Http::with_user_agent);
-        let http = site_http.as_ref().unwrap_or(&self.http);
-        match op(http, &record.info, &credential).await {
+        let http = self.site_http(&record.info);
+        match op(&http, &record.info, &credential).await {
             Err(SiteError::SessionExpired) if record.info.platform == Platform::Sub2api => {
-                let refreshed = {
-                    let _guard = self.refresh_lock.lock().await;
-                    // 别的请求可能刚续期过：用钥匙串里最新的那一对。
-                    let (_, latest) = self.load(id)?;
-                    if latest != credential {
-                        latest
-                    } else {
-                        let refreshed = sub2api::refresh(http, &record.info, &credential).await?;
-                        self.store_credential(id, &refreshed)?;
-                        refreshed
-                    }
-                };
-                op(http, &record.info, &refreshed).await
+                let refreshed = self.renew(id, &record.info, &credential).await?;
+                op(&http, &record.info, &refreshed).await
             }
             result => result,
         }
+    }
+
+    /// 访问站点用的 HTTP 客户端：在登录窗口里登录的站点，用那个窗口的 User-Agent。
+    fn site_http(&self, info: &SiteInfo) -> Http {
+        match info.user_agent.as_deref() {
+            Some(user_agent) => Http::with_user_agent(user_agent),
+            None => self.http.clone(),
+        }
+    }
+
+    /// sub2api 的访问令牌被拒绝了：用刷新令牌续期，保存新的一对，返回新凭证。
+    /// 刷新令牌只能用一次，同一时间只续期一次；别的请求刚续期过时直接用钥匙串里最新的。
+    pub(crate) async fn renew(
+        &self,
+        id: &str,
+        info: &SiteInfo,
+        stale: &Credential,
+    ) -> Result<Credential, SiteError> {
+        let _guard = self.refresh_lock.lock().await;
+        let (_, latest) = self.load(id)?;
+        if latest != *stale {
+            return Ok(latest);
+        }
+        let refreshed = sub2api::refresh(&self.site_http(info), info, stale).await?;
+        self.store_credential(id, &refreshed)?;
+        Ok(refreshed)
     }
 
     pub async fn account(&self, id: &str) -> Result<AccountSummary, SiteError> {

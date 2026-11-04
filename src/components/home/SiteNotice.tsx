@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, Copy, ExternalLink, Headset, Megaphone } from "lucide-react";
-import { Button } from "../ui/button";
+import { Check, Copy, ExternalLink, Headset, LifeBuoy, Megaphone } from "lucide-react";
+import { Button, buttonVariants } from "../ui/button";
 import { Card } from "../ui/card";
 import { inDesktop } from "../../lib/tauri";
 import type { ActiveBrand } from "../../lib/useActiveBrand";
@@ -18,11 +19,12 @@ function supportTarget(item: Support): string | null {
   return null;
 }
 
-/** 首页：站长的欢迎语、公告和客服方式（用专属链接接入的站点才有）。 */
+/** 首页：站长的欢迎语、公告和客服方式（用专属链接接入的站点才有）；站长开了工单时可以直接提交工单。 */
 export function SiteNotice({ brand }: { brand: ActiveBrand }) {
   const { t } = useTranslation();
   const config = brand.site?.config;
-  if (!config || (!config.notice.content && config.support.length === 0)) return null;
+  const tickets = config?.tickets?.enabled ?? false;
+  if (!brand.site || !config || (!config.notice.content && config.support.length === 0 && !tickets)) return null;
   return (
     <Card className="space-y-4">
       {config.notice.content && (
@@ -34,12 +36,20 @@ export function SiteNotice({ brand }: { brand: ActiveBrand }) {
           </div>
         </div>
       )}
-      {config.support.length > 0 && (
+      {(config.support.length > 0 || tickets) && (
         <div className="flex gap-3">
           <Headset className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
           <div className="min-w-0 flex-1">
             <h2 className="font-medium">{t("home.support")}</h2>
             <ul className="mt-2 flex flex-wrap gap-2">
+              {tickets && (
+                <li>
+                  <Link to={`/tickets?site=${encodeURIComponent(brand.site.id)}`} className={buttonVariants({ size: "sm" })}>
+                    <LifeBuoy className="h-4 w-4" aria-hidden />
+                    {t("home.openTicket")}
+                  </Link>
+                </li>
+              )}
               {config.support.map((item) => (
                 <SupportItem key={`${item.type}-${item.value}`} item={item} />
               ))}
