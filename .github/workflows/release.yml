@@ -4,6 +4,7 @@ name: Release
 # 上传到同名的 GitHub Release 草稿；在 GitHub 上检查后点「发布」，用户就能下载。
 # 同时用更新签名密钥给更新包签名，并生成 latest.json：已安装的应用从
 # releases/latest/download/latest.json 发现新版本（只认已发布的正式版，草稿不算）。
+# 两个平台都构建完后，把 latest.json 里的下载地址换成普通下载地址（见 updater-links）。
 on:
   push:
     tags: ["v*"]
@@ -55,5 +56,18 @@ jobs:
             首次打开的说明见 README 的「下载安装」。
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # tauri-action 在 latest.json 里写的是 GitHub API 的资源地址，不登录时每个 IP 每小时只能下载 60 次，
+  # 用户共用代理或 VPN 时应用内更新容易失败。换成 github.com/<仓库>/releases/download/<标签>/<文件名>。
+  updater-links:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Use normal download links in latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/updater-links.mjs "$GITHUB_REPOSITORY" "v$(node -p "require('./src-tauri/tauri.conf.json').version")"
