@@ -77,7 +77,7 @@ npm run tauri build          # 打包安装包（需要更新签名密钥，见�
 
 安装包里带自动更新，打包时要用更新签名密钥给更新包签名：设置环境变量 `TAURI_SIGNING_PRIVATE_KEY`（密钥文件路径或内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。GitHub Actions 从仓库的同名 secret 读取。只是运行开发模式（`npm run tauri dev`）不需要。
 
-发布新版本：改 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 里的版本号，推送 `v<版本号>` 标签（或在 Actions 里手动运行 Release）。工作流会生成 Release 草稿，里面有安装包、签过名的更新包和 `latest.json`；检查后在 GitHub 上发布。发布之后，已安装的应用会在启动时提示更新（草稿和预发布版不会推送给用户）。
+发布新版本：改 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 里的版本号，推送 `v<版本号>` 标签（或在 Actions 里手动运行 Release）。工作流会生成 Release 草稿，里面有安装包、签过名的更新包和 `latest.json`；检查后在 GitHub 上发布。发布时 GitHub 创建标签会再触发一次工作流，已经发布的版本会自动跳过，不会重复构建；版本号没改就手动运行会直接报错。发布之后，已安装的应用会在启动时提示更新（草稿和预发布版不会推送给用户）。
 
 国内网络下 npm 可以用镜像；拉取 Rust 依赖慢时，可以设置 `CARGO_HTTP_PROXY=http://127.0.0.1:<端口>`。
 

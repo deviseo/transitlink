@@ -5,6 +5,7 @@ name: Release
 # 同时用更新签名密钥给更新包签名，并生成 latest.json：已安装的应用从
 # releases/latest/download/latest.json 发现新版本（只认已发布的正式版，草稿不算）。
 # 两个平台都构建完后，把 latest.json 里的下载地址换成普通下载地址（见 updater-links）。
+# 已经发布的版本不再构建（见 check）。
 on:
   push:
     tags: ["v*"]
@@ -14,7 +15,43 @@ permissions:
   contents: write
 
 jobs:
+  # 手动运行生成的草稿还没有标签，点「发布」时 GitHub 才创建标签，这也会触发本工作流。
+  # tauri-action 只找草稿，找不到就再建一个同名草稿，所以这个版本已经发布过时不再构建：
+  # 发布触发的（推送标签）直接跳过；手动运行时报错，提醒先改版本号。
+  # 推送的标签和 tauri.conf.json 里的版本不一致时也报错，免得构建出别的版本。
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: release
+        name: Skip versions that are already published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::标签 $GITHUB_REF_NAME 和 src-tauri/tauri.conf.json 里的版本（$tag）不一致，没有构建。"
+            exit 1
+          fi
+          # 这个接口只返回已发布的 Release（不含草稿）；没发布时下面会打印一行 404，是正常的。
+          echo "检查 $tag 是否已经发布…"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --silent; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+              echo "::notice::$tag 已经发布（这次是发布时创建的标签触发的），跳过构建。"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$tag 已经发布过了。要发新版本，先改 tauri.conf.json、Cargo.toml、package.json 里的版本号。"
+            exit 1
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
