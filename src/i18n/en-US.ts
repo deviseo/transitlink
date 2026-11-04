@@ -1,0 +1,67 @@
+import type zhCN from "./zh-CN";
+
+const enUS: typeof zhCN = {
+  nav: {
+    home: "Home",
+    sites: "Sites",
+    tools: "Tools",
+    settings: "Settings",
+  },
+  common: {
+    refresh: "Refresh",
+    copy: "Copy",
+    separator: ", ",
+    copied: "Copied",
+    previewMode: "Browser preview: showing sample data. Run the desktop app to read this computer.",
+    comingSoon: "Coming next",
+  },
+  home: {
+    title: "Get started in three steps",
+    subtitle: "Connect your relay sites, sign in, and set up Claude Code and Codex in one click.",
+    step1: "Connect a site",
+    step1Desc: "Open the link your site sent you, or enter the site's address.",
+    step2: "Sign in",
+    step2Desc: "Enter your site account and password, plus a code if two-step verification is on.",
+    step3: "One-click setup",
+    step3Desc: "Creates a dedicated key for each tool, writes its config, and tests the connection.",
+    goSites: "Connect a site",
+    goTools: "View tools",
+    toolsDetected: "Installed here: {{names}}",
+    toolsMissing: "Neither Claude Code nor Codex is installed here yet",
+  },
+  sites: {
+    title: "Sites",
+    subtitle: "Works with relay sites built on new-api and sub2api. Connect several and switch any time.",
+    emptyTitle: "No sites connected yet",
+    emptyDesc: "There are two ways to connect a site:",
+    wayLink: "Site link: open the link your site sent you; the app fills in the site and shows its branding.",
+    wayUrl: "Site address: enter the relay site's address and the app detects its type.",
+  },
+  tools: {
+    title: "Tools",
+    subtitle: "This release supports Claude Code and Codex. Set them up in one click after you connect and sign in to a site.",
+    installed: "Installed",
+    notInstalled: "Not installed",
+    version: "Version",
+    binary: "Command",
+    config: "Config file",
+    configMissing: "(not created yet)",
+    installHint: "Install it by running this in a terminal (Node.js required):",
+    configure: "One-click setup",
+    configureHint: "Available after you connect and sign in to a site",
+    claudeCode: "Claude Code",
+    codex: "Codex",
+    claudeCodeDesc: "Anthropic's command-line coding assistant",
+    codexDesc: "OpenAI's coding assistant (the CLI, IDE extension and desktop app share one config)",
+  },
+  settings: {
+    title: "Settings",
+    about: "About",
+    version: "Version",
+    platform: "System",
+    dataDir: "Data folder",
+    language: "Language",
+  },
+};
+
+export default enUS;
