@@ -1,0 +1,54 @@
+name: Release
+
+# 推送 v* 标签或手动运行时，构建 macOS（Apple 芯片和 Intel 通用）和 Windows 安装包，
+# 上传到同名的 GitHub Release 草稿；在 GitHub 上检查后点「发布」，用户就能下载。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin --bundles app,dmg
+          - platform: windows-latest
+            args: --bundles nsis
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: TransitLink v__VERSION__
+          releaseBody: |
+            下载：macOS 选 `.dmg`（Apple 芯片和 Intel 通用），Windows 选 `-setup.exe`。
+            首次打开的说明见 README 的「下载安装」。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

@@ -4,6 +4,18 @@
 
 站长可以在 [TransitHub](https://github.com/deviseo/transit-hub) 里定制品牌（logo、名称、主题色）、推荐配置和功能开关，用户的工单也由 TransitHub 处理。
 
+## 下载安装
+
+在 [Releases](https://github.com/deviseo/transitlink/releases/latest) 页面下载最新版本：
+
+- **macOS**（Apple 芯片和 Intel 通用）：下载 `.dmg`，打开后把 TransitLink 拖进「应用程序」。
+- **Windows 10 / 11**：下载 `-setup.exe`，双击安装。
+
+安装包暂时没有正式的开发者签名，第一次打开时系统会拦一下：
+
+- **macOS**：如果提示「无法打开」或「已损坏」，到「系统设置 → 隐私与安全性」点「仍要打开」；或者在终端运行 `xattr -dr com.apple.quarantine /Applications/TransitLink.app` 后再打开。
+- **Windows**：如果出现「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
+
 ## 当前进度（第一期）
 
 - [x] 项目骨架：Tauri 2 + React + TypeScript；中英文界面；浅色、深色跟随系统
@@ -13,7 +25,8 @@
 - [ ] 登录 new-api 和 sub2api（两步验证、人机验证窗口）、凭证存入系统钥匙串、显示余额
 - [ ] Key 管理；一键配置 Claude Code 和 Codex（写前备份、可还原、连通测试）；托盘切换站点
 - [ ] 读取 TransitHub 下发的站长品牌和推荐配置
-- [ ] 自动更新和安装包发布
+- [x] GitHub Actions 自动构建安装包，发布到 GitHub Releases
+- [ ] 应用内自动更新
 
 ## 开发
 
@@ -31,6 +44,8 @@ npm run build                # 前端类型检查和构建
 (cd src-tauri && cargo test) # Rust 单元测试
 npm run tauri build          # 打包安装包
 ```
+
+发布新版本：改 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 里的版本号，推送 `v<版本号>` 标签（或在 Actions 里手动运行 Release）。工作流会生成 Release 草稿，检查后在 GitHub 上发布。
 
 国内网络下 npm 可以用镜像；拉取 Rust 依赖慢时，可以设置 `CARGO_HTTP_PROXY=http://127.0.0.1:<端口>`。
 
