@@ -24,7 +24,7 @@ function groupLabel(group: GroupSummary) {
 }
 
 /** 一键配置：选站点和分组，依次给每个工具建专用 Key、测试连通、写入配置。`only` 时只配置这一个工具。 */
-export function SetupDialog({ open, onClose, only }: { open: boolean; onClose: () => void; only?: ToolKind }) {
+export function SetupDialog({ open, onClose, only, initialSiteId }: { open: boolean; onClose: () => void; only?: ToolKind; initialSiteId?: string }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const sites = useQuery({ queryKey: ["sites"], queryFn: listSites, enabled: open });
@@ -43,15 +43,18 @@ export function SetupDialog({ open, onClose, only }: { open: boolean; onClose: (
     setRuns({});
     setGroups({});
     setChosen({ claudeCode: !only || only === "claudeCode", codex: !only || only === "codex" });
-  }, [open, only]);
+    // 从托盘点了某个站点：直接选中它。
+    if (initialSiteId) setSiteId(initialSiteId);
+  }, [open, only, initialSiteId]);
 
-  // 默认站点：工具已经配置到的那个，否则第一个。
+  // 默认站点：托盘点的那个，或者工具已经配置到的那个，否则第一个。
   useEffect(() => {
     const list = sites.data ?? [];
     if (!open || list.length === 0 || list.some((site) => site.id === siteId)) return;
     const configured = tools.data?.find((tool) => (!only || tool.kind === only) && tool.applied)?.applied?.siteId;
-    setSiteId(list.find((site) => site.id === configured)?.id ?? list[0].id);
-  }, [open, siteId, sites.data, tools.data, only]);
+    const preferred = [initialSiteId, configured].find((id) => id && list.some((site) => site.id === id));
+    setSiteId(preferred ?? list[0].id);
+  }, [open, siteId, sites.data, tools.data, only, initialSiteId]);
 
   const plan = useQuery({ queryKey: ["setup-plan", siteId], queryFn: () => setupPlan(siteId), enabled: open && siteId !== "" });
   const money = new Intl.NumberFormat(i18n.language, { style: "currency", currency: "USD", maximumFractionDigits: 2 });

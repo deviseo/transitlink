@@ -6,7 +6,7 @@
 
 pub mod claude;
 pub mod codex;
-mod files;
+pub(crate) mod files;
 pub mod probe;
 mod state;
 
@@ -19,7 +19,7 @@ use crate::sites::http::Http;
 use crate::sites::{GroupSummary, Platform, SiteError};
 use crate::tools::{self, ToolKind, ToolStatus};
 use probe::TestResult;
-use state::{Applied, ToolState};
+use state::{Applied, Choice, ToolState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigError {
@@ -217,14 +217,7 @@ impl Configurator {
                 ToolOverview {
                     status,
                     state,
-                    applied: applied.map(|applied| AppliedView {
-                        site_id: applied.site_id,
-                        site_name: applied.site_name,
-                        key_name: applied.key_name,
-                        group: applied.group,
-                        model: applied.model,
-                        applied_at: applied.applied_at,
-                    }),
+                    applied: applied.map(view),
                     current_base_url: current.base_url,
                     current_model: current.model,
                     current_provider: current.provider,
@@ -295,16 +288,16 @@ impl Configurator {
         if !test.passed() {
             return Err(ConfigError::Test(test));
         }
+        // 指定的模型这个站点没有（例如切换站点时沿用的旧模型）：Claude Code 改用它的默认模型，
+        // Codex 自动挑一个。
+        let offered = model
+            .filter(|model| ids.iter().any(|id| id == model))
+            .map(str::to_string);
         let model = match kind {
-            ToolKind::ClaudeCode => model.map(str::to_string),
-            ToolKind::Codex => Some(
-                model
-                    .map(str::to_string)
-                    .or_else(|| probe::pick_codex_model(&ids))
-                    .ok_or(ConfigError::Test(TestResult::NoFamilyModels {
-                        models: ids.len(),
-                    }))?,
-            ),
+            ToolKind::ClaudeCode => offered,
+            ToolKind::Codex => Some(offered.or_else(|| probe::pick_codex_model(&ids)).ok_or(
+                ConfigError::Test(TestResult::NoFamilyModels { models: ids.len() }),
+            )?),
         };
 
         let previous = self.state.get(kind);
@@ -348,6 +341,14 @@ impl Configurator {
         .map_err(|error| ConfigError::Io(error.to_string()))?;
 
         let group = key.group.clone();
+        self.state.remember(
+            &site.id,
+            kind,
+            Choice {
+                group_id: group_id.map(str::to_string),
+                model: model.clone(),
+            },
+        )?;
         self.state.set(
             kind,
             Applied {
@@ -424,8 +425,59 @@ impl Configurator {
         files::backup(&path, &self.backup_dir(kind), now, false)?;
         files::write(&path, &out)?;
         applied.model = model.map(str::to_string);
+        let mut choice = self
+            .state
+            .choice(&applied.site_id, kind)
+            .unwrap_or_default();
+        choice.model = applied.model.clone();
+        self.state.remember(&applied.site_id, kind, choice)?;
         self.state.set(kind, applied)?;
         Ok(())
+    }
+
+    /// 用 TransitLink 配置着的工具（还原过的不算）。
+    pub fn configured(&self) -> Vec<(ToolKind, AppliedView)> {
+        self.state
+            .all()
+            .into_iter()
+            .map(|(kind, applied)| (kind, view(applied)))
+            .collect()
+    }
+
+    /// 把一个已经配置过的工具切换到另一个站点：沿用在那个站点上选过的分组和模型；
+    /// 没选过就用推荐的分组，模型沿用现在的（那个站点没有时自动换）。
+    pub async fn switch(
+        &self,
+        accounts: &Accounts,
+        kind: ToolKind,
+        site_id: &str,
+    ) -> Result<ApplyOutcome, ConfigError> {
+        let (group_id, model) = match self.state.choice(site_id, kind) {
+            Some(choice) => (choice.group_id, choice.model),
+            None => {
+                let site = accounts.site(site_id)?;
+                let groups = accounts.groups(site_id).await.unwrap_or_default();
+                let user_group = accounts
+                    .account(site_id)
+                    .await
+                    .ok()
+                    .and_then(|account| account.group);
+                let (group, _) =
+                    recommend(kind, site.info.platform, &groups, user_group.as_deref());
+                (
+                    group,
+                    self.state.get(kind).and_then(|applied| applied.model),
+                )
+            }
+        };
+        self.apply(
+            accounts,
+            kind,
+            site_id,
+            group_id.as_deref(),
+            model.as_deref(),
+        )
+        .await
     }
 
     /// 还原到第一次用 TransitLink 配置之前。
@@ -459,6 +511,17 @@ impl Configurator {
         }
         self.state.remove(kind)?;
         Ok(())
+    }
+}
+
+fn view(applied: Applied) -> AppliedView {
+    AppliedView {
+        site_id: applied.site_id,
+        site_name: applied.site_name,
+        key_name: applied.key_name,
+        group: applied.group,
+        model: applied.model,
+        applied_at: applied.applied_at,
     }
 }
 

@@ -25,7 +25,7 @@
 - [x] 账号密码登录 new-api（新版和旧版）和 sub2api，支持两步验证；显示余额
 - [x] Key 管理：查看、新建（可选分组）、一键复制
 - [x] 一键配置 Claude Code 和 Codex：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
-- [ ] 托盘里切换站点
+- [x] 托盘（macOS 是菜单栏）里切换站点：配置过的工具一起切过去，沿用在那个站点上选过的分组和模型；关掉窗口后留在托盘里运行
 - [ ] 开启了人机验证的站点：在登录窗口里完成验证
 - [ ] 专属链接一键接入；读取 TransitHub 下发的站长品牌和推荐配置
 - [x] GitHub Actions 自动构建安装包，发布到 GitHub Releases
@@ -91,6 +91,8 @@ src-tauri/               Rust 核心
   src/secrets.rs         凭证存取（系统钥匙串）
   src/configure/         一键配置：Claude Code、Codex 的配置读写，备份、还原，连通测试
   src/tools.rs           本机编程工具检测
+  src/tray.rs            托盘菜单：切换站点、打开、退出
+  src/settings.rs        应用设置（~/.transitlink/settings.json）
   src/paths.rs           本地目录（~/.transitlink）
 ```
 

@@ -7,6 +7,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use crate::accounts::{Accounts, LoginOutcome, SiteView};
 use crate::configure::probe::TestResult;
 use crate::configure::{ApplyOutcome, ConfigError, Configurator, SetupPlan, ToolOverview};
+use crate::settings::{AppSettings, SettingsStore};
 use crate::sites::{AccountSummary, GroupSummary, KeySummary, SiteError, SiteInfo};
 use crate::tools::ToolKind;
 use crate::{paths, tools};
@@ -21,7 +22,7 @@ pub struct AppInfo {
 }
 
 /// 命令出错时返回给前端：`code` 对应界面文案（errors.*），`message` 是站点自己的说明或出错的文件。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CommandError {
     code: String,
     message: Option<String>,
@@ -57,6 +58,48 @@ impl From<ConfigError> for CommandError {
 }
 
 type CommandResult<T> = Result<T, CommandError>;
+
+/// 站点、工具配置或语言变了：托盘菜单跟着更新。
+fn refresh_tray(app: &AppHandle) {
+    #[cfg(desktop)]
+    crate::tray::refresh(app);
+    #[cfg(not(desktop))]
+    let _ = app;
+}
+
+fn settings_error(error: std::io::Error) -> CommandError {
+    ConfigError::Io(error.to_string()).into()
+}
+
+/// 应用设置（关掉窗口后是否留在托盘等）。
+#[tauri::command]
+pub fn app_settings(settings: State<'_, SettingsStore>) -> AppSettings {
+    settings.get()
+}
+
+#[tauri::command]
+pub fn set_close_to_tray(
+    settings: State<'_, SettingsStore>,
+    enabled: bool,
+) -> CommandResult<AppSettings> {
+    settings
+        .update(|settings| settings.close_to_tray = enabled)
+        .map_err(settings_error)
+}
+
+/// 前端告诉我们界面语言，托盘菜单用同一种语言。
+#[tauri::command]
+pub fn set_language(
+    app: AppHandle,
+    settings: State<'_, SettingsStore>,
+    language: String,
+) -> CommandResult<()> {
+    settings
+        .update(|settings| settings.language = language)
+        .map_err(settings_error)?;
+    refresh_tray(&app);
+    Ok(())
+}
 
 /// 应用名称、版本、数据目录和操作系统。
 #[tauri::command]
@@ -162,6 +205,7 @@ pub async fn setup_plan(
 /// 一键配置一个工具：专用 Key → 测试 → 备份 → 写配置。
 #[tauri::command]
 pub async fn apply_tool(
+    app: AppHandle,
     accounts: State<'_, Accounts>,
     configurator: State<'_, Configurator>,
     kind: ToolKind,
@@ -169,7 +213,7 @@ pub async fn apply_tool(
     group_id: Option<String>,
     model: Option<String>,
 ) -> CommandResult<ApplyOutcome> {
-    Ok(configurator
+    let outcome = configurator
         .apply(
             &accounts,
             kind,
@@ -177,7 +221,9 @@ pub async fn apply_tool(
             group_id.as_deref(),
             model.as_deref(),
         )
-        .await?)
+        .await?;
+    refresh_tray(&app);
+    Ok(outcome)
 }
 
 /// 用工具配置里现在的地址和 Key 测试连通。
@@ -211,10 +257,13 @@ pub async fn set_tool_model(
 /// 还原到第一次用 TransitLink 配置之前。
 #[tauri::command]
 pub async fn restore_tool(
+    app: AppHandle,
     configurator: State<'_, Configurator>,
     kind: ToolKind,
 ) -> CommandResult<()> {
-    Ok(configurator.restore(kind).await?)
+    configurator.restore(kind).await?;
+    refresh_tray(&app);
+    Ok(())
 }
 
 /// 识别站点类型和登录要求。
@@ -226,22 +275,28 @@ pub async fn detect_site(accounts: State<'_, Accounts>, url: String) -> CommandR
 /// 账号密码登录。
 #[tauri::command]
 pub async fn login_site(
+    app: AppHandle,
     accounts: State<'_, Accounts>,
     url: String,
     account: String,
     password: String,
 ) -> CommandResult<LoginOutcome> {
-    Ok(accounts.login(&url, &account, &password).await?)
+    let outcome = accounts.login(&url, &account, &password).await?;
+    refresh_tray(&app);
+    Ok(outcome)
 }
 
 /// 提交两步验证码。
 #[tauri::command]
 pub async fn submit_login_code(
+    app: AppHandle,
     accounts: State<'_, Accounts>,
     flow_id: String,
     code: String,
 ) -> CommandResult<LoginOutcome> {
-    Ok(accounts.submit_code(&flow_id, &code).await?)
+    let outcome = accounts.submit_code(&flow_id, &code).await?;
+    refresh_tray(&app);
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -256,8 +311,10 @@ pub fn list_sites(accounts: State<'_, Accounts>) -> CommandResult<Vec<SiteView>>
 
 /// 删除站点：同时删掉钥匙串里的凭证。
 #[tauri::command]
-pub fn remove_site(accounts: State<'_, Accounts>, id: String) -> CommandResult<()> {
-    Ok(accounts.remove(&id)?)
+pub fn remove_site(app: AppHandle, accounts: State<'_, Accounts>, id: String) -> CommandResult<()> {
+    accounts.remove(&id)?;
+    refresh_tray(&app);
+    Ok(())
 }
 
 #[tauri::command]

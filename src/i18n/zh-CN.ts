@@ -167,6 +167,12 @@ const zhCN = {
     goSites: "去接入站点",
     pickOne: "至少选一个工具",
   },
+  tray: {
+    switched: "已切换到「{{site}}」：{{tools}}",
+    failed: "切换到「{{site}}」时有工具没切换成功：",
+    failure: "{{tool}}：{{error}}",
+    dismiss: "知道了",
+  },
   update: {
     title: "更新",
     available: "TransitLink {{version}} 可以更新了",
@@ -184,6 +190,7 @@ const zhCN = {
     version: "版本",
     platform: "系统",
     dataDir: "数据目录",
+    closeToTray: "关掉窗口后留在托盘里运行（macOS 在菜单栏），可以从托盘直接切换站点",
     language: "语言",
   },
 };

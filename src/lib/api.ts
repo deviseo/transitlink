@@ -295,5 +295,31 @@ export const checkUpdate = () => call<UpdateInfo | null>("check_update", () => n
 /** 下载并安装新版本，装好后应用会自动重启。 */
 export const installUpdate = () => call<null>("install_update", () => null);
 
+export interface AppSettings {
+  closeToTray: boolean;
+  language: string;
+}
+
+/** 托盘切换站点的结果（Rust 发来的 tray-switched 事件）。 */
+export interface SwitchReport {
+  siteId: string;
+  switched: ToolKind[];
+  failures: { kind: ToolKind; error: CommandError }[];
+}
+
+const previewSettings: AppSettings = { closeToTray: true, language: "zh-CN" };
+
+export const getAppSettings = () => call<AppSettings>("app_settings", () => ({ ...previewSettings }));
+
+/** 关掉窗口后是否留在托盘里运行。 */
+export const setCloseToTray = (enabled: boolean) =>
+  call<AppSettings>("set_close_to_tray", () => {
+    previewSettings.closeToTray = enabled;
+    return { ...previewSettings };
+  }, { enabled });
+
+/** 告诉桌面端界面语言，托盘菜单用同一种语言。 */
+export const setLanguage = (language: string) => call<null>("set_language", () => null, { language });
+
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;

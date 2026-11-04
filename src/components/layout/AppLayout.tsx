@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Globe, House, Info, Settings, Wrench, type LucideIcon } from "lucide-react";
 import { applyBrandColor, defaultBrand } from "../../brand";
+import { TrayEvents } from "./TrayEvents";
 import { UpdateBanner } from "./UpdateBanner";
 import { getAppInfo } from "../../lib/api";
 import { cn } from "../../lib/cn";
@@ -67,6 +68,7 @@ export function AppLayout() {
           </div>
         )}
         <UpdateBanner />
+        <TrayEvents />
         <div className="mx-auto max-w-4xl px-8 py-8">
           <Outlet />
         </div>

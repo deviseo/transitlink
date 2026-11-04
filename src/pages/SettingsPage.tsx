@@ -6,12 +6,18 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { InfoRow } from "../components/ui/info-row";
 import { languages } from "../i18n";
-import { checkUpdate, getAppInfo, installUpdate } from "../lib/api";
+import { checkUpdate, getAppInfo, getAppSettings, installUpdate, setCloseToTray } from "../lib/api";
 import { errorText } from "../lib/errors";
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
   const { data: info } = useQuery({ queryKey: ["app-info"], queryFn: getAppInfo });
+  const queryClient = useQueryClient();
+  const settings = useQuery({ queryKey: ["app-settings"], queryFn: getAppSettings });
+  const closeToTray = useMutation({
+    mutationFn: setCloseToTray,
+    onSuccess: (next) => queryClient.setQueryData(["app-settings"], next),
+  });
 
   return (
     <div className="space-y-6">
@@ -31,6 +37,19 @@ export function SettingsPage() {
             </Button>
           ))}
         </div>
+        {settings.data && (
+          <label className="mt-4 flex items-start gap-2.5 border-t border-border pt-4 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-brand"
+              checked={settings.data.closeToTray}
+              disabled={closeToTray.isPending}
+              onChange={(event) => closeToTray.mutate(event.target.checked)}
+            />
+            {t("settings.closeToTray")}
+          </label>
+        )}
+        {closeToTray.isError && <p className="mt-2 text-sm text-danger">{errorText(t, closeToTray.error)}</p>}
       </Card>
       <Card>
         <h2 className="font-medium">{t("settings.about")}</h2>

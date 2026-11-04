@@ -1,5 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
+import { setLanguage } from "../lib/api";
 import zhCN from "./zh-CN";
 import enUS from "./en-US";
 
@@ -22,7 +23,10 @@ void i18n.use(initReactI18next).init({
 i18n.on("languageChanged", (language) => {
   localStorage.setItem(storageKey, language);
   document.documentElement.lang = language;
+  void setLanguage(language).catch(() => undefined);
 });
 document.documentElement.lang = initial;
+// 托盘菜单是系统原生菜单，由桌面端生成，启动时把语言告诉它。
+void setLanguage(initial).catch(() => undefined);
 
 export default i18n;

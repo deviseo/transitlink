@@ -169,6 +169,12 @@ const enUS: typeof zhCN = {
     goSites: "Connect a site",
     pickOne: "Pick at least one tool",
   },
+  tray: {
+    switched: "Switched to {{site}}: {{tools}}",
+    failed: "Some tools couldn't switch to {{site}}:",
+    failure: "{{tool}}: {{error}}",
+    dismiss: "Dismiss",
+  },
   update: {
     title: "Updates",
     available: "TransitLink {{version}} is available",
@@ -186,6 +192,7 @@ const enUS: typeof zhCN = {
     version: "Version",
     platform: "System",
     dataDir: "Data folder",
+    closeToTray: "Keep running in the tray after closing the window (the menu bar on macOS), so you can switch sites from there",
     language: "Language",
   },
 };

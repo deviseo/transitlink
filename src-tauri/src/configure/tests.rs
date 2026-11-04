@@ -434,3 +434,83 @@ fn recommends_groups_by_platform_or_name() {
         (None, false)
     );
 }
+
+#[tokio::test]
+async fn switches_configured_tools_between_sites() {
+    let a = MockServer::start().await;
+    let b = MockServer::start().await;
+    // 每个站点只新建一次 Codex 专用 Key：切回来时沿用。
+    mount_site(&a, 1).await;
+    mount_site(&b, 1).await;
+    let fixture = fixture(&a, "switch");
+    let site_b = fixture
+        .accounts
+        .save(
+            SiteInfo {
+                platform: Platform::Sub2api,
+                base_url: b.uri(),
+                name: "Backup".into(),
+                logo_url: None,
+                captcha_required: false,
+                password_login_disabled: false,
+                email_only: true,
+                quota_per_unit: None,
+                password_encryption: false,
+            },
+            "a@example.com",
+            &Credential::Sub2api {
+                access_token: "at".into(),
+                refresh_token: "rt".into(),
+            },
+        )
+        .unwrap()
+        .id;
+    let config = fixture.home.join(".codex/config.toml");
+
+    fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::Codex,
+            &fixture.site_id,
+            Some("2"),
+            None,
+        )
+        .await
+        .unwrap();
+    fixture
+        .configurator
+        .set_model(ToolKind::Codex, Some("gpt-5.5"))
+        .await
+        .unwrap();
+
+    // 第一次切到 B：用推荐的分组，模型沿用现在的。
+    let outcome = fixture
+        .configurator
+        .switch(&fixture.accounts, ToolKind::Codex, &site_b)
+        .await
+        .unwrap();
+    assert_eq!(outcome.model.as_deref(), Some("gpt-5.5"));
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains(&format!("base_url = \"{}/v1\"", b.uri()))
+    );
+    let configured = fixture.configurator.configured();
+    assert_eq!(configured.len(), 1);
+    assert_eq!(configured[0].1.site_name, "Backup");
+
+    // 切回 A：沿用在 A 上选过的分组和模型，不再新建 Key。
+    let back = fixture
+        .configurator
+        .switch(&fixture.accounts, ToolKind::Codex, &fixture.site_id)
+        .await
+        .unwrap();
+    assert!(!back.key_created);
+    assert_eq!(back.model.as_deref(), Some("gpt-5.5"));
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains(&format!("base_url = \"{}/v1\"", a.uri()))
+    );
+}

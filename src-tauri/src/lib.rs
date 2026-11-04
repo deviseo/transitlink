@@ -10,9 +10,12 @@ mod commands;
 mod configure;
 mod paths;
 mod secrets;
+mod settings;
 mod sites;
 mod store;
 mod tools;
+#[cfg(desktop)]
+mod tray;
 
 #[cfg(desktop)]
 use tauri::Manager;
@@ -26,11 +29,7 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            tray::show_main(app);
         }));
         // 自动更新：安装包和 latest.json 都在 GitHub Releases，签名用 tauri.conf.json 里的公钥校验。
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -49,13 +48,18 @@ pub fn run() {
         Box::new(|key| std::env::var(key).ok()),
     );
 
+    let settings = settings::SettingsStore::load(paths::app_data_dir().join("settings.json"));
+
     builder
         .manage(accounts)
         .manage(configurator)
+        .manage(settings)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
+            #[cfg(desktop)]
+            tray::create(_app.handle())?;
             // Windows / Linux 的开发版和免安装版需要在运行时注册 transitlink:// 协议；
             // macOS 由安装包里的 Info.plist 注册。
             #[cfg(any(windows, target_os = "linux"))]
@@ -66,6 +70,23 @@ pub fn run() {
                 }
             }
             Ok(())
+        })
+        // 关掉主窗口时留在托盘里（设置里可以关掉这个行为）。
+        .on_window_event(|window, event| {
+            #[cfg(desktop)]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+                && window
+                    .app_handle()
+                    .state::<settings::SettingsStore>()
+                    .get()
+                    .close_to_tray
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            #[cfg(not(desktop))]
+            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
@@ -89,7 +110,17 @@ pub fn run() {
             commands::restore_tool,
             commands::check_update,
             commands::install_update,
+            commands::app_settings,
+            commands::set_close_to_tray,
+            commands::set_language,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running TransitLink");
+        .build(tauri::generate_context!())
+        .expect("error while building TransitLink")
+        .run(|_app, _event| {
+            // macOS：窗口藏起来以后点程序坞图标，重新显示窗口。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                tray::show_main(_app);
+            }
+        });
 }
