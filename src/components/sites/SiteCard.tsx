@@ -31,6 +31,9 @@ export function SiteCard({ site, onRelogin, onRemove }: { site: SiteView; onRelo
           <p className="truncate text-xs text-muted-foreground">
             {site.baseUrl} · {site.account}
           </p>
+          {site.config && (
+            <p className="truncate text-xs text-brand">{t("sites.card.linked", { brand: site.config.brand.name || site.config.site.name })}</p>
+          )}
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">{t("sites.card.balance")}</p>

@@ -23,13 +23,18 @@ export function LinkEvents() {
   useEffect(() => {
     if (!inDesktop) return;
     void takeLink();
-    void refreshSiteLinks()
-      .then((changed) => {
-        if (changed) void queryClient.invalidateQueries({ queryKey: ["sites"] });
-      })
-      .catch(() => undefined);
+    // 站长改了品牌、推荐或公告：启动时和之后每半小时检查一次（桌面端只重新读取超过 10 分钟的配置）。
+    const refresh = () =>
+      void refreshSiteLinks()
+        .then((changed) => {
+          if (changed) void queryClient.invalidateQueries({ queryKey: ["sites"] });
+        })
+        .catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 30 * 60 * 1000);
     const stop = listen("site-link", () => void takeLink());
     return () => {
+      window.clearInterval(timer);
       void stop.then((unlisten) => unlisten());
     };
   }, [takeLink, queryClient]);
@@ -40,10 +45,11 @@ export function LinkEvents() {
         open={link !== null}
         initialLink={link ?? undefined}
         onClose={() => setLink(null)}
-        onAdded={(site) => {
+        onAdded={(site, viaLink) => {
           setLink(null);
           void queryClient.invalidateQueries({ queryKey: ["sites"] });
-          setSetupSite(site.id);
+          // 新登录的站点接着一键配置；已经接入过、只是换上品牌的不打扰。
+          if (viaLink) setSetupSite(site.id);
         }}
       />
       <SetupDialog open={setupSite !== null} initialSiteId={setupSite ?? undefined} onClose={() => setSetupSite(null)} />

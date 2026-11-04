@@ -94,12 +94,13 @@ pub async fn attach_site_link(
     Ok(view)
 }
 
-/// 更新站长配置：前端启动时调用，超过 6 小时没更新的才去读。读取失败的保留旧配置。返回有没有更新。
+/// 更新站长配置：前端启动时和每半小时调用，超过 10 分钟没更新的才去读。读取失败的保留旧配置。
+/// 返回有没有更新。
 #[tauri::command]
 pub async fn refresh_site_links(accounts: State<'_, Accounts>) -> CommandResult<bool> {
     let http = Http::new();
     let mut changed = false;
-    for (id, config_url) in accounts.stale_configs(6 * 3600) {
+    for (id, config_url) in accounts.stale_configs(10 * 60) {
         if let Ok(config) = siteconfig::fetch(&http, &config_url).await {
             changed |= accounts.attach_config(&id, &config_url, config).is_ok();
         }

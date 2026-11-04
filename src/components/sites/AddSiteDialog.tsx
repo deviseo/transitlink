@@ -1,5 +1,6 @@
 import { useEffect, useState, type SubmitEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -13,6 +14,7 @@ import {
   detectSite,
   isCommandError,
   isPreview,
+  listSites,
   loadSiteLink,
   loginSite,
   submitLoginCode,
@@ -30,7 +32,9 @@ type Step =
   | { kind: "link" }
   | { kind: "login"; info: SiteInfo }
   | { kind: "code"; info: SiteInfo; flowId: string; stage: "login" | "token" }
-  | { kind: "password"; info: SiteInfo; flowId: string };
+  | { kind: "password"; info: SiteInfo; flowId: string }
+  /** 登录成功了，但没能记下站长配置（例如配置里的站点地址和登录的站点不一致）。 */
+  | { kind: "attachFailed"; site: SiteView; message: string };
 
 /** 输入的是专属链接（或者直接是 TransitHub 的配置地址），而不是站点网址。 */
 const looksLikeLink = (value: string) => value.trim().startsWith("transitlink://") || value.includes("/api/client/v1/sites/");
@@ -59,6 +63,9 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
   const [busy, setBusy] = useState(false);
   const [waitingWeb, setWaitingWeb] = useState(false);
   const [link, setLink] = useState<SiteLink | null>(null);
+  const sites = useQuery({ queryKey: ["sites"], queryFn: listSites, enabled: open });
+  // 专属链接指向的站点已经接入过：可以直接换上站长的品牌，不用重新登录。
+  const existing = link ? (sites.data ?? []).filter((site) => site.baseUrl === link.config.site.baseUrl) : [];
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -128,9 +135,21 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
       onAdded(site, false);
       return;
     }
-    // 记下站长配置；读不到时站点照样接入，只是没有站长的品牌。
-    const branded = await attachSiteLink(site.id, link.configUrl).catch(() => site);
-    onAdded(branded, true);
+    // 记下站长配置。失败时站点照样接入，但要告诉用户没能换上品牌。
+    try {
+      onAdded(await attachSiteLink(site.id, link.configUrl), true);
+    } catch (caught) {
+      setStep({ kind: "attachFailed", site, message: errorText(t, caught) });
+    }
+  };
+
+  const onUseExisting = () => {
+    if (!link) return;
+    void run(async () => {
+      let updated: SiteView | null = null;
+      for (const site of existing) updated = await attachSiteLink(site.id, link.configUrl);
+      if (updated) onAdded(updated, false);
+    });
   };
 
   const onDetect = (event: SubmitEvent<HTMLFormElement>) => {
@@ -189,21 +208,48 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
         <div className="space-y-4">
           <BrandHeader link={link} />
           {link.config.brand.welcome && <p className="text-sm text-muted-foreground">{link.config.brand.welcome}</p>}
-          <p className="text-xs text-muted-foreground">{t("sites.add.linkHint")}</p>
+          {existing.length > 0 ? (
+            <p className="rounded-lg bg-brand/10 p-3 text-sm">
+              {t("sites.add.linkExisting", { accounts: existing.map((site) => site.account).join(t("common.separator")) })}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">{t("sites.add.linkHint")}</p>
+          )}
           {error && <ErrorLine text={error} />}
           <div className="flex gap-2">
             <Button variant="secondary" onClick={() => setStep({ kind: "url" })} disabled={busy}>
               {t("common.back")}
             </Button>
-            <Button className="flex-1" onClick={onLinkContinue} disabled={busy}>
-              {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
-              {t("sites.add.linkContinue")}
-            </Button>
+            {existing.length > 0 ? (
+              <>
+                <Button variant="secondary" className="flex-1" onClick={onLinkContinue} disabled={busy}>
+                  {t("sites.add.otherAccount")}
+                </Button>
+                <Button className="flex-1" onClick={onUseExisting} disabled={busy}>
+                  {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
+                  {t("sites.add.useExisting")}
+                </Button>
+              </>
+            ) : (
+              <Button className="flex-1" onClick={onLinkContinue} disabled={busy}>
+                {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
+                {t("sites.add.linkContinue")}
+              </Button>
+            )}
           </div>
         </div>
       )}
 
-      {step.kind !== "url" && step.kind !== "link" && (link ? <BrandHeader link={link} /> : <SiteHeader info={step.info} />)}
+      {step.kind === "attachFailed" && (
+        <div className="space-y-4">
+          <Notice text={t("sites.add.attachFailed", { error: step.message })} />
+          <Button className="w-full" onClick={() => onAdded(step.site, true)}>
+            {t("sites.add.continue")}
+          </Button>
+        </div>
+      )}
+
+      {step.kind !== "url" && step.kind !== "link" && step.kind !== "attachFailed" && (link ? <BrandHeader link={link} /> : <SiteHeader info={step.info} />)}
 
       {step.kind === "login" && step.info.captchaRequired && (
         <div className="mt-4 space-y-4">

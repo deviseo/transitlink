@@ -240,7 +240,8 @@ export const submitLoginPassword = (flowId: string, password: string) =>
     return { status: "done", site };
   }, { flowId, password });
 
-export const listSites = () => call<SiteView[]>("list_sites", () => [...previewSites]);
+// 预览数据每次都返回新对象，和桌面端一样（否则 React Query 认为数据没变，不会刷新界面）。
+export const listSites = () => call<SiteView[]>("list_sites", () => previewSites.map((site) => ({ ...site })));
 
 export const removeSite = (id: string) =>
   call<void>("remove_site", () => {
@@ -383,8 +384,9 @@ export const loadSiteLink = (link: string) =>
 /** 用专属链接接入后，记下站长配置。 */
 export const attachSiteLink = (id: string, configUrl: string) =>
   call<SiteView>("attach_site_link", () => {
-    const site = previewSites.find((item) => item.id === id) ?? previewSite;
-    site.config = previewConfig;
+    const index = previewSites.findIndex((item) => item.id === id);
+    const site = { ...(previewSites[index] ?? previewSite), config: previewConfig };
+    if (index >= 0) previewSites[index] = site;
     return { ...site };
   }, { id, configUrl });
 
