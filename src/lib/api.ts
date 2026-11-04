@@ -88,6 +88,8 @@ export interface SiteConfig {
   recommend: { claudeCode: { group: string; model: string }; codex: { group: string; model: string } };
   notice: { content: string; updatedAt: string | null };
   support: { type: string; label: string; value: string }[];
+  /** 对客户端本身的要求：minVersion 是最低版本，空表示不限制（旧版本保存的配置里没有这一项）。 */
+  client?: { minVersion: string };
 }
 
 /** 专属链接读到的内容：配置地址和站长配置。 */

@@ -8,6 +8,7 @@ import { useActiveBrand } from "../../lib/useActiveBrand";
 import { BrandMark } from "./BrandMark";
 import { LinkEvents } from "./LinkEvents";
 import { TrayEvents } from "./TrayEvents";
+import { MinVersionBanner } from "./MinVersionBanner";
 import { UpdateBanner } from "./UpdateBanner";
 import { getAppInfo } from "../../lib/api";
 import { cn } from "../../lib/cn";
@@ -70,6 +71,7 @@ export function AppLayout() {
             {t("common.previewMode")}
           </div>
         )}
+        <MinVersionBanner />
         <UpdateBanner />
         <TrayEvents />
         <LinkEvents />

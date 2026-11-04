@@ -18,6 +18,7 @@ pub struct SiteConfig {
     pub recommend: ConfigRecommend,
     pub notice: ConfigNotice,
     pub support: Vec<ConfigSupport>,
+    pub client: ConfigClient,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -69,6 +70,23 @@ pub struct ConfigSupport {
     pub kind: String,
     pub label: String,
     pub value: String,
+}
+
+/// 站长对客户端本身的要求。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConfigClient {
+    /// 最低版本（例如 0.2.0），低于它时提示用户更新；空表示不限制。
+    pub min_version: String,
+}
+
+/// 是不是 X.Y.Z 形式的版本号。
+fn is_version(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 4 && part.chars().all(|c| c.is_ascii_digit())
+        })
 }
 
 /// 从用户给的内容里取出配置地址：专属链接 `transitlink://connect?config=…`，或者直接是配置地址。
@@ -163,6 +181,17 @@ fn sanitize(mut config: SiteConfig, config_url: &url::Url) -> Result<SiteConfig,
             .map(|url| url.to_string())
             .unwrap_or_default()
     };
+    let version = config
+        .client
+        .min_version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .to_string();
+    config.client.min_version = if is_version(&version) {
+        version
+    } else {
+        String::new()
+    };
     config.support.retain(|item| !item.value.trim().is_empty());
     config.support.truncate(8);
     for item in &mut config.support {
@@ -224,6 +253,7 @@ mod tests {
                 "recommend": { "claudeCode": { "group": "claude", "model": "" }, "codex": { "group": "codex", "model": "gpt-6.1-sol" } },
                 "notice": { "content": "周六维护", "updatedAt": "2026-11-04T08:00:00Z" },
                 "support": [{ "type": "telegram", "label": "TG", "value": "https://t.me/x" }, { "type": "qq", "label": "空", "value": " " }],
+                "client": { "minVersion": "v0.2.0" },
                 "future": { "ignored": true }
             })))
             .mount(&server)
@@ -258,6 +288,7 @@ mod tests {
         );
         assert_eq!(config.recommend.codex.model, "gpt-6.1-sol");
         assert_eq!(config.support.len(), 1);
+        assert_eq!(config.client.min_version, "0.2.0");
         assert_eq!(
             fetch(&http, &format!("{base}/api/client/v1/sites/gone"))
                 .await
@@ -293,11 +324,15 @@ mod tests {
                 color: "red".into(),
                 ..ConfigBrand::default()
             },
+            client: ConfigClient {
+                min_version: "latest".into(),
+            },
             ..SiteConfig::default()
         };
         let clean = sanitize(config, &config_url).unwrap();
         assert_eq!(clean.site.base_url, "https://relay.example.com");
         assert_eq!(clean.brand.logo_url, "");
         assert_eq!(clean.brand.color, "");
+        assert_eq!(clean.client.min_version, "", "only X.Y.Z versions are kept");
     }
 }

@@ -200,6 +200,8 @@ const enUS: typeof zhCN = {
   update: {
     title: "Updates",
     available: "TransitLink {{version}} is available",
+    required: "{{site}} requires TransitLink {{version}} or later. You have {{current}}; please update.",
+    download: "Download the latest version",
     install: "Update and restart",
     installing: "Downloading the update…",
     later: "Later",

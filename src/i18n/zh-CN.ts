@@ -198,6 +198,8 @@ const zhCN = {
   update: {
     title: "更新",
     available: "TransitLink {{version}} 可以更新了",
+    required: "{{site}} 要求使用 TransitLink {{version}} 或更高版本，你现在是 {{current}}，请更新。",
+    download: "下载最新版",
     install: "更新并重启",
     installing: "正在下载更新…",
     later: "稍后",
