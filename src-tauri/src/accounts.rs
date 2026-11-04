@@ -11,6 +11,7 @@ use rand::RngCore;
 use serde::Serialize;
 
 use crate::secrets::SecretStore;
+use crate::siteconfig::SiteConfig;
 use crate::sites::http::Http;
 use crate::sites::{
     self, AccountSummary, Credential, GroupSummary, KeySummary, LoginStep, Platform, SiteError,
@@ -34,6 +35,8 @@ pub struct SiteView {
     pub platform: Platform,
     pub account: String,
     pub added_at: u64,
+    /// 站长的配置（用专属链接接入的站点才有）。
+    pub config: Option<SiteConfig>,
 }
 
 impl From<&SiteRecord> for SiteView {
@@ -46,6 +49,7 @@ impl From<&SiteRecord> for SiteView {
             platform: record.info.platform,
             account: record.account.clone(),
             added_at: record.added_at,
+            config: record.config.clone(),
         }
     }
 }
@@ -56,7 +60,7 @@ impl From<&SiteRecord> for SiteView {
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum LoginOutcome {
     Done {
-        site: SiteView,
+        site: Box<SiteView>,
     },
     #[serde(rename_all = "camelCase")]
     NeedCode {
@@ -336,7 +340,9 @@ impl Accounts {
                     account.to_string()
                 };
                 self.save(info, &display, &credential)
-                    .map(|site| LoginOutcome::Done { site })
+                    .map(|site| LoginOutcome::Done {
+                        site: Box::new(site),
+                    })
             }
             LoginStep::NeedLoginCode {
                 flow_token,
@@ -407,16 +413,22 @@ impl Accounts {
         credential: &Credential,
     ) -> Result<SiteView, SiteError> {
         let existing = self.store.find(&info.base_url, account).map_err(storage)?;
-        let record = SiteRecord {
-            id: existing
-                .as_ref()
-                .map(|site| site.id.clone())
-                .unwrap_or_else(new_id),
-            info,
-            account: account.to_string(),
-            added_at: existing
-                .map(|site| site.added_at)
-                .unwrap_or_else(crate::clock::now_secs),
+        // 重新登录时沿用原来的记录，站长配置也留着。
+        let record = match existing {
+            Some(existing) => SiteRecord {
+                info,
+                account: account.to_string(),
+                ..existing
+            },
+            None => SiteRecord {
+                id: new_id(),
+                info,
+                account: account.to_string(),
+                added_at: crate::clock::now_secs(),
+                config_url: None,
+                config: None,
+                config_fetched_at: 0,
+            },
         };
         self.store_credential(&record.id, credential)?;
         self.store.upsert(record.clone()).map_err(storage)?;
@@ -441,6 +453,36 @@ impl Accounts {
             .ok_or(SiteError::SessionExpired)?;
         let credential = serde_json::from_str(&json).map_err(|_| SiteError::SessionExpired)?;
         Ok((record, credential))
+    }
+
+    /// 记下站点的站长配置。配置里的站点地址必须和登录的站点一致，免得别人的链接改掉这个站点的品牌。
+    pub fn attach_config(
+        &self,
+        id: &str,
+        config_url: &str,
+        config: SiteConfig,
+    ) -> Result<SiteView, SiteError> {
+        let mut record = self.site(id)?;
+        if config.site.base_url != record.info.base_url {
+            return Err(SiteError::LinkInvalid);
+        }
+        record.config_url = Some(config_url.to_string());
+        record.config = Some(config);
+        record.config_fetched_at = crate::clock::now_secs();
+        self.store.upsert(record.clone()).map_err(storage)?;
+        Ok(SiteView::from(&record))
+    }
+
+    /// 需要重新读取站长配置的站点（上次读取超过 `max_age` 秒）。
+    pub fn stale_configs(&self, max_age: u64) -> Vec<(String, String)> {
+        let now = crate::clock::now_secs();
+        self.store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| now.saturating_sub(record.config_fetched_at) >= max_age)
+            .filter_map(|record| record.config_url.map(|url| (record.id, url)))
+            .collect()
     }
 
     /// 站点记录（不含凭证）。
@@ -837,6 +879,65 @@ mod tests {
         };
         assert_eq!(site.account, "a@example.com");
         assert_eq!(accounts.account(&site.id).await.unwrap().balance_usd, 1.5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn site_links_must_match_the_site_and_survive_relogin() {
+        let dir = std::env::temp_dir().join(format!("transitlink-link-{}", std::process::id()));
+        let accounts = accounts(&dir);
+        let credential = Credential::Sub2api {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+        };
+        let site = accounts
+            .save(
+                site_info("https://relay.example.com"),
+                "a@example.com",
+                &credential,
+            )
+            .unwrap();
+        let config = |base_url: &str| crate::siteconfig::SiteConfig {
+            site: crate::siteconfig::ConfigSite {
+                name: "Relay".into(),
+                base_url: base_url.into(),
+                platform: "sub2api".into(),
+            },
+            brand: crate::siteconfig::ConfigBrand {
+                name: "极速中转".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let url = "https://hub.example.com/api/client/v1/sites/abcdefghij";
+
+        // 别人站点的链接不能改这个站点的品牌。
+        assert_eq!(
+            accounts
+                .attach_config(&site.id, url, config("https://other.example.com"))
+                .unwrap_err(),
+            SiteError::LinkInvalid
+        );
+        let view = accounts
+            .attach_config(&site.id, url, config("https://relay.example.com"))
+            .unwrap();
+        assert_eq!(view.config.unwrap().brand.name, "极速中转");
+        assert!(accounts.stale_configs(3600).is_empty(), "just fetched");
+        assert_eq!(
+            accounts.stale_configs(0),
+            vec![(site.id.clone(), url.to_string())]
+        );
+
+        // 重新登录同一个账号：站长配置还在。
+        let again = accounts
+            .save(
+                site_info("https://relay.example.com"),
+                "a@example.com",
+                &credential,
+            )
+            .unwrap();
+        assert_eq!(again.id, site.id);
+        assert!(again.config.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

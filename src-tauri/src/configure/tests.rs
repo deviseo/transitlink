@@ -401,12 +401,19 @@ fn recommends_groups_by_platform_or_name() {
             ToolKind::ClaudeCode,
             Platform::Newapi,
             &newapi,
-            Some("default")
+            Some("default"),
+            None
         ),
         (Some("cc".into()), true)
     );
     assert_eq!(
-        recommend(ToolKind::Codex, Platform::Newapi, &newapi, Some("default")),
+        recommend(
+            ToolKind::Codex,
+            Platform::Newapi,
+            &newapi,
+            Some("default"),
+            None
+        ),
         (Some("plus".into()), true)
     );
     let plain = [
@@ -414,7 +421,7 @@ fn recommends_groups_by_platform_or_name() {
         group("default", "default", "", None),
     ];
     assert_eq!(
-        recommend(ToolKind::Codex, Platform::Newapi, &plain, Some("vip")),
+        recommend(ToolKind::Codex, Platform::Newapi, &plain, Some("vip"), None),
         (Some("vip".into()), false),
         "falls back to the user's own group"
     );
@@ -423,16 +430,58 @@ fn recommends_groups_by_platform_or_name() {
         group("4", "Claude", "", Some("anthropic")),
     ];
     assert_eq!(
-        recommend(ToolKind::ClaudeCode, Platform::Sub2api, &sub2api, None),
+        recommend(
+            ToolKind::ClaudeCode,
+            Platform::Sub2api,
+            &sub2api,
+            None,
+            None
+        ),
         (Some("4".into()), true)
     );
     assert_eq!(
-        recommend(ToolKind::Codex, Platform::Sub2api, &sub2api, None),
+        recommend(ToolKind::Codex, Platform::Sub2api, &sub2api, None, None),
         (Some("3".into()), false)
     );
     assert_eq!(
-        recommend(ToolKind::Codex, Platform::Sub2api, &[], None),
+        recommend(ToolKind::Codex, Platform::Sub2api, &[], None, None),
         (None, false)
+    );
+
+    // 站长指定的分组优先（按 ID 或名称找）；站点里已经没有这个分组时照常推荐。
+    let operator = |group: &str| crate::siteconfig::ToolRecommend {
+        group: group.into(),
+        model: String::new(),
+    };
+    assert_eq!(
+        recommend(
+            ToolKind::ClaudeCode,
+            Platform::Sub2api,
+            &sub2api,
+            None,
+            Some(&operator("3"))
+        ),
+        (Some("3".into()), true)
+    );
+    assert_eq!(
+        recommend(
+            ToolKind::Codex,
+            Platform::Newapi,
+            &newapi,
+            None,
+            Some(&operator("default"))
+        ),
+        (Some("default".into()), true)
+    );
+    assert_eq!(
+        recommend(
+            ToolKind::ClaudeCode,
+            Platform::Sub2api,
+            &sub2api,
+            None,
+            Some(&operator("99"))
+        ),
+        (Some("4".into()), true)
     );
 }
 

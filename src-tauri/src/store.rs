@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::siteconfig::SiteConfig;
 use crate::sites::SiteInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +16,13 @@ pub struct SiteRecord {
     /// 登录用的账号（用户名或邮箱），用于显示和重新登录。
     pub account: String,
     pub added_at: u64,
+    /// 用专属链接接入的站点：配置地址和读到的站长配置（品牌、推荐、公告、客服）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<SiteConfig>,
+    #[serde(default)]
+    pub config_fetched_at: u64,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -132,6 +140,9 @@ mod tests {
             },
             account: account.into(),
             added_at: 1,
+            config_url: None,
+            config: None,
+            config_fetched_at: 0,
         }
     }
 

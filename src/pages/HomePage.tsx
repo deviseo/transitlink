@@ -3,16 +3,20 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Check, KeyRound, Link2, Sparkles, Terminal } from "lucide-react";
+import { SiteNotice } from "../components/home/SiteNotice";
+import { BrandMark } from "../components/layout/BrandMark";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { detectTools, listSites } from "../lib/api";
+import { useActiveBrand } from "../lib/useActiveBrand";
 
 export function HomePage() {
   const { t } = useTranslation();
   const { data: tools } = useQuery({ queryKey: ["tools"], queryFn: detectTools });
   const { data: sites } = useQuery({ queryKey: ["sites"], queryFn: listSites });
   const [setupOpen, setSetupOpen] = useState(false);
+  const brand = useActiveBrand();
   const installed = (tools ?? []).filter((tool) => tool.installed).map((tool) => t(`tools.${tool.kind}`));
   const configured = (tools ?? []).filter((tool) => tool.state === "configured").map((tool) => t(`tools.${tool.kind}`));
   // 接入站点时就完成了登录，所以有站点即前两步完成。
@@ -41,6 +45,16 @@ export function HomePage() {
         <h1 className="text-2xl font-semibold">{t("home.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">{t("home.subtitle")}</p>
       </header>
+
+      {brand.site && brand.welcome && (
+        <Card className="flex items-center gap-3">
+          <BrandMark brand={brand} className="h-10 w-10" />
+          <div className="min-w-0">
+            <p className="font-medium">{brand.name}</p>
+            <p className="text-sm text-muted-foreground">{brand.welcome}</p>
+          </div>
+        </Card>
+      )}
 
       <ol className="grid gap-3 md:grid-cols-3">
         {steps.map((step, index) => (
@@ -81,6 +95,7 @@ export function HomePage() {
           </Link>
         </div>
       </Card>
+      <SiteNotice brand={brand} />
       <SetupDialog open={setupOpen} onClose={() => setSetupOpen(false)} />
     </div>
   );

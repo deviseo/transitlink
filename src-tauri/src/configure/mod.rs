@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::accounts::Accounts;
+use crate::siteconfig::{self, SiteConfig};
 use crate::sites::http::Http;
 use crate::sites::{GroupSummary, Platform, SiteError};
 use crate::tools::{self, ToolKind, ToolStatus};
@@ -111,8 +112,10 @@ pub struct SetupPlan {
 pub struct ToolPlan {
     pub kind: ToolKind,
     pub recommended_group: Option<String>,
-    /// 推荐的分组是按名称或平台认出来的（否则只是用户自己的或第一个分组）。
+    /// 推荐的分组是站长指定的，或者按名称、平台认出来的（否则只是用户自己的或第一个分组）。
     pub matched: bool,
+    /// 站长推荐的模型（没有时由工具自己决定，Codex 自动挑）。
+    pub recommended_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,12 +243,21 @@ impl Configurator {
         let tools = ToolKind::ALL
             .iter()
             .map(|kind| {
-                let (recommended_group, matched) =
-                    recommend(*kind, site.info.platform, &groups, user_group.as_deref());
+                let site_recommend = operator_recommend(site.config.as_ref(), *kind);
+                let (recommended_group, matched) = recommend(
+                    *kind,
+                    site.info.platform,
+                    &groups,
+                    user_group.as_deref(),
+                    site_recommend,
+                );
                 ToolPlan {
                     kind: *kind,
                     recommended_group,
                     matched,
+                    recommended_model: site_recommend
+                        .map(|recommend| recommend.model.clone())
+                        .filter(|model| !model.is_empty()),
                 }
             })
             .collect();
@@ -462,12 +474,20 @@ impl Configurator {
                     .await
                     .ok()
                     .and_then(|account| account.group);
-                let (group, _) =
-                    recommend(kind, site.info.platform, &groups, user_group.as_deref());
-                (
-                    group,
-                    self.state.get(kind).and_then(|applied| applied.model),
-                )
+                let site_recommend = operator_recommend(site.config.as_ref(), kind);
+                let (group, _) = recommend(
+                    kind,
+                    site.info.platform,
+                    &groups,
+                    user_group.as_deref(),
+                    site_recommend,
+                );
+                // 站长推荐了模型就用它，否则沿用现在的（那个站点没有时自动换）。
+                let model = site_recommend
+                    .map(|recommend| recommend.model.clone())
+                    .filter(|model| !model.is_empty())
+                    .or_else(|| self.state.get(kind).and_then(|applied| applied.model));
+                (group, model)
             }
         };
         self.apply(
@@ -525,14 +545,37 @@ fn view(applied: Applied) -> AppliedView {
     }
 }
 
-/// 给工具推荐分组：sub2api 按分组的平台（Claude Code 用 anthropic，Codex 用 openai）；new-api 按分组
-/// 名称和说明里的关键词。都没认出来时，用用户自己的分组、`default` 或第一个分组。
+/// 站长在 TransitHub 里给这个工具的推荐（用专属链接接入的站点才有）。
+fn operator_recommend(
+    config: Option<&SiteConfig>,
+    kind: ToolKind,
+) -> Option<&siteconfig::ToolRecommend> {
+    let config = config?;
+    Some(match kind {
+        ToolKind::ClaudeCode => &config.recommend.claude_code,
+        ToolKind::Codex => &config.recommend.codex,
+    })
+}
+
+/// 给工具推荐分组：先用站长指定的分组（站点里还有这个分组时）；再按 sub2api 分组的平台
+/// （Claude Code 用 anthropic，Codex 用 openai）或 new-api 分组名称和说明里的关键词认；都没认出来时，
+/// 用用户自己的分组、`default` 或第一个分组。
 fn recommend(
     kind: ToolKind,
     platform: Platform,
     groups: &[GroupSummary],
     user_group: Option<&str>,
+    operator: Option<&siteconfig::ToolRecommend>,
 ) -> (Option<String>, bool) {
+    if let Some(wanted) = operator
+        .map(|recommend| recommend.group.as_str())
+        .filter(|group| !group.is_empty())
+        && let Some(group) = groups
+            .iter()
+            .find(|group| group.id == wanted || group.name == wanted)
+    {
+        return (Some(group.id.clone()), true);
+    }
     if let Some(group) = groups
         .iter()
         .find(|group| fits_group(kind, platform, group))

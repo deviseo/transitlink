@@ -7,37 +7,48 @@ import { Dialog } from "../ui/dialog";
 import { Field, Input } from "../ui/input";
 import { SiteAvatar } from "./SiteAvatar";
 import {
+  attachSiteLink,
   cancelLogin,
   cancelWebLogin,
   detectSite,
   isCommandError,
   isPreview,
+  loadSiteLink,
   loginSite,
   submitLoginCode,
   submitLoginPassword,
   webLogin,
   type LoginOutcome,
   type SiteInfo,
+  type SiteLink,
   type SiteView,
 } from "../../lib/api";
 import { errorText } from "../../lib/errors";
 
 type Step =
   | { kind: "url" }
+  | { kind: "link" }
   | { kind: "login"; info: SiteInfo }
   | { kind: "code"; info: SiteInfo; flowId: string; stage: "login" | "token" }
   | { kind: "password"; info: SiteInfo; flowId: string };
 
+/** 输入的是专属链接（或者直接是 TransitHub 的配置地址），而不是站点网址。 */
+const looksLikeLink = (value: string) => value.trim().startsWith("transitlink://") || value.includes("/api/client/v1/sites/");
+
 /**
  * 接入站点：输入网址 → 识别 → 账号密码登录 → （需要时）两步验证码。
  * 开了人机验证的站点改为在登录窗口里登录（站点自己的登录页），new-api 之后再输一次密码创建长期令牌。
+ * 用专属链接接入时，先显示站长的品牌，登录成功后记下站长配置。
  */
-export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onClose, onAdded }: {
+export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", initialLink, onClose, onAdded }: {
   open: boolean;
   initialUrl?: string;
   initialAccount?: string;
+  /** 专属链接：打开时直接读取。 */
+  initialLink?: string;
   onClose: () => void;
-  onAdded: (site: SiteView) => void;
+  /** `viaLink`：是用专属链接接入的（接下来自动打开一键配置）。 */
+  onAdded: (site: SiteView, viaLink: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [step, setStep] = useState<Step>({ kind: "url" });
@@ -47,6 +58,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [waitingWeb, setWaitingWeb] = useState(false);
+  const [link, setLink] = useState<SiteLink | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,7 +70,14 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     setCode("");
     setError(null);
     setWaitingWeb(false);
-  }, [open, initialUrl, initialAccount]);
+    setLink(null);
+    if (initialLink) {
+      setUrl(initialLink);
+      void run(async () => openLink(initialLink));
+    }
+    // run 和 openLink 每次渲染都是新的函数，只在打开时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialUrl, initialAccount, initialLink]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -79,8 +98,8 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
   };
 
   /** 登录（或下一步）的结果：完成，或者转到验证码、密码步骤。 */
-  const handle = (info: SiteInfo, outcome: LoginOutcome) => {
-    if (outcome.status === "done") finish(outcome.site);
+  const handle = async (info: SiteInfo, outcome: LoginOutcome) => {
+    if (outcome.status === "done") await finish(outcome.site);
     else if (outcome.status === "needPassword") setStep({ kind: "password", info, flowId: outcome.flowId });
     else setStep({ kind: "code", info, flowId: outcome.flowId, stage: outcome.stage });
   };
@@ -89,7 +108,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     setWaitingWeb(true);
     setError(null);
     try {
-      handle(info, await webLogin(info.baseUrl));
+      await handle(info, await webLogin(info.baseUrl));
     } catch (caught) {
       // 用户自己关掉了登录窗口：回到按钮，不算出错。
       if (!(isCommandError(caught) && caught.code === "loginCancelled")) setError(errorText(t, caught));
@@ -98,14 +117,35 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     }
   };
 
-  const finish = (site: SiteView) => {
+  const openLink = async (value: string) => {
+    setLink(await loadSiteLink(value));
+    setStep({ kind: "link" });
+  };
+
+  const finish = async (site: SiteView) => {
     setPassword("");
-    onAdded(site);
+    if (!link) {
+      onAdded(site, false);
+      return;
+    }
+    // 记下站长配置；读不到时站点照样接入，只是没有站长的品牌。
+    const branded = await attachSiteLink(site.id, link.configUrl).catch(() => site);
+    onAdded(branded, true);
   };
 
   const onDetect = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (looksLikeLink(url)) {
+      void run(async () => openLink(url));
+      return;
+    }
+    setLink(null);
     void run(async () => setStep({ kind: "login", info: await detectSite(url) }));
+  };
+
+  const onLinkContinue = () => {
+    if (!link) return;
+    void run(async () => setStep({ kind: "login", info: await detectSite(link.config.site.baseUrl) }));
   };
 
   const onLogin = (event: SubmitEvent<HTMLFormElement>) => {
@@ -120,7 +160,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     void run(async () => {
       const outcome = await submitLoginCode(step.flowId, code);
       setCode("");
-      handle(step.info, outcome);
+      await handle(step.info, outcome);
     });
   };
 
@@ -134,7 +174,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
     <Dialog open={open} title={t("sites.add.title")} onClose={close} closeLabel={t("common.close")}>
       {step.kind === "url" && (
         <form onSubmit={onDetect} className="space-y-4">
-          <Field label={t("sites.add.url")} htmlFor="site-url" hint={t("sites.add.urlHint")}>
+          <Field label={t("sites.add.url")} htmlFor="site-url" hint={t("sites.add.urlOrLinkHint")}>
             <Input id="site-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://api.example.com" autoFocus required />
           </Field>
           {error && <ErrorLine text={error} />}
@@ -145,7 +185,25 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
         </form>
       )}
 
-      {step.kind !== "url" && <SiteHeader info={step.info} />}
+      {step.kind === "link" && link && (
+        <div className="space-y-4">
+          <BrandHeader link={link} />
+          {link.config.brand.welcome && <p className="text-sm text-muted-foreground">{link.config.brand.welcome}</p>}
+          <p className="text-xs text-muted-foreground">{t("sites.add.linkHint")}</p>
+          {error && <ErrorLine text={error} />}
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setStep({ kind: "url" })} disabled={busy}>
+              {t("common.back")}
+            </Button>
+            <Button className="flex-1" onClick={onLinkContinue} disabled={busy}>
+              {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
+              {t("sites.add.linkContinue")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step.kind !== "url" && step.kind !== "link" && (link ? <BrandHeader link={link} /> : <SiteHeader info={step.info} />)}
 
       {step.kind === "login" && step.info.captchaRequired && (
         <div className="mt-4 space-y-4">
@@ -237,6 +295,32 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", onCl
         </form>
       )}
     </Dialog>
+  );
+}
+
+/** 用专属链接接入时显示站长的品牌：logo（没有时用主题色和名称首字）、名称和站点地址。 */
+function BrandHeader({ link }: { link: SiteLink }) {
+  const { brand, site } = link.config;
+  const name = brand.name || site.name;
+  return (
+    <div className="flex items-center gap-3 rounded-lg bg-muted p-3">
+      {brand.logoUrl ? (
+        <img src={brand.logoUrl} alt="" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+      ) : (
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm font-semibold text-white"
+          style={{ backgroundColor: brand.color || "var(--brand)" }}
+          aria-hidden
+        >
+          {name.slice(0, 1)}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium">{name}</p>
+        <p className="truncate text-xs text-muted-foreground">{site.baseUrl}</p>
+      </div>
+      <Badge tone="brand">{site.platform === "newapi" ? "new-api" : "sub2api"}</Badge>
+    </div>
   );
 }
 

@@ -8,6 +8,8 @@ use crate::accounts::{Accounts, LoginOutcome, SiteView};
 use crate::configure::probe::TestResult;
 use crate::configure::{ApplyOutcome, ConfigError, Configurator, SetupPlan, ToolOverview};
 use crate::settings::{AppSettings, SettingsStore};
+use crate::siteconfig::{self, SiteConfig};
+use crate::sites::http::Http;
 use crate::sites::{AccountSummary, GroupSummary, KeySummary, SiteError, SiteInfo};
 use crate::tools::ToolKind;
 use crate::{paths, tools};
@@ -58,6 +60,58 @@ impl From<ConfigError> for CommandError {
 }
 
 type CommandResult<T> = Result<T, CommandError>;
+
+/// 冷启动时由专属链接打开：链接先存在这里，前端准备好后来取（运行中点的链接也走这里）。
+#[derive(Default)]
+pub struct PendingLink(pub std::sync::Mutex<Option<String>>);
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteLink {
+    config_url: String,
+    config: SiteConfig,
+}
+
+/// 读取专属链接（或者直接是配置地址）指向的站长配置。
+#[tauri::command]
+pub async fn load_site_link(link: String) -> CommandResult<SiteLink> {
+    let config_url = siteconfig::config_url_from(&link).ok_or(SiteError::LinkInvalid)?;
+    let config = siteconfig::fetch(&Http::new(), &config_url).await?;
+    Ok(SiteLink { config_url, config })
+}
+
+/// 用专属链接接入后，记下站长配置（品牌、推荐、公告、客服）。
+#[tauri::command]
+pub async fn attach_site_link(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    id: String,
+    config_url: String,
+) -> CommandResult<SiteView> {
+    let config = siteconfig::fetch(&Http::new(), &config_url).await?;
+    let view = accounts.attach_config(&id, &config_url, config)?;
+    refresh_tray(&app);
+    Ok(view)
+}
+
+/// 更新站长配置：前端启动时调用，超过 6 小时没更新的才去读。读取失败的保留旧配置。返回有没有更新。
+#[tauri::command]
+pub async fn refresh_site_links(accounts: State<'_, Accounts>) -> CommandResult<bool> {
+    let http = Http::new();
+    let mut changed = false;
+    for (id, config_url) in accounts.stale_configs(6 * 3600) {
+        if let Ok(config) = siteconfig::fetch(&http, &config_url).await {
+            changed |= accounts.attach_config(&id, &config_url, config).is_ok();
+        }
+    }
+    Ok(changed)
+}
+
+/// 取走等着处理的专属链接（配置地址）。
+#[tauri::command]
+pub fn take_pending_link(pending: State<'_, PendingLink>) -> Option<String> {
+    pending.0.lock().ok().and_then(|mut slot| slot.take())
+}
 
 /// 站点、工具配置或语言变了：托盘菜单跟着更新。
 fn refresh_tray(app: &AppHandle) {

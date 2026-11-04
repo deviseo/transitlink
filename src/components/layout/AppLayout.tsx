@@ -3,7 +3,10 @@ import { NavLink, Outlet } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Globe, House, Info, Settings, Wrench, type LucideIcon } from "lucide-react";
-import { applyBrandColor, defaultBrand } from "../../brand";
+import { applyBrandColor } from "../../brand";
+import { useActiveBrand } from "../../lib/useActiveBrand";
+import { BrandMark } from "./BrandMark";
+import { LinkEvents } from "./LinkEvents";
 import { TrayEvents } from "./TrayEvents";
 import { UpdateBanner } from "./UpdateBanner";
 import { getAppInfo } from "../../lib/api";
@@ -26,8 +29,8 @@ const navItems: NavItem[] = [
 
 export function AppLayout() {
   const { t } = useTranslation();
-  // 接入站长定制的站点后，这里换成该站点的品牌。
-  const brand = defaultBrand;
+  // 用专属链接接入的站点，换成站长的品牌。
+  const brand = useActiveBrand();
   const { data: info } = useQuery({ queryKey: ["app-info"], queryFn: getAppInfo });
 
   useEffect(() => applyBrandColor(brand.color), [brand.color]);
@@ -36,7 +39,7 @@ export function AppLayout() {
     <div className="flex h-full">
       <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-card">
         <div className="flex h-16 items-center gap-2.5 px-5">
-          <img src={brand.logoUrl} alt="" className="h-8 w-8 rounded-lg" />
+          <BrandMark brand={brand} />
           <span className="truncate text-base font-semibold">{brand.name}</span>
         </div>
         <nav className="flex-1 space-y-1 px-3 py-2">
@@ -69,6 +72,7 @@ export function AppLayout() {
         )}
         <UpdateBanner />
         <TrayEvents />
+        <LinkEvents />
         <div className="mx-auto max-w-4xl px-8 py-8">
           <Outlet />
         </div>

@@ -5,6 +5,7 @@ import { Globe, Link2, Plus } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { AddSiteDialog } from "../components/sites/AddSiteDialog";
 import { SiteCard } from "../components/sites/SiteCard";
+import { SetupDialog } from "../components/tools/SetupDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { listSites, removeSite, type SiteView } from "../lib/api";
@@ -14,6 +15,8 @@ export function SitesPage() {
   const queryClient = useQueryClient();
   const sites = useQuery({ queryKey: ["sites"], queryFn: listSites });
   const [dialog, setDialog] = useState<{ url: string; account: string } | null>(null);
+  // 用专属链接接入后，接着打开一键配置。
+  const [setupSite, setSetupSite] = useState<string | null>(null);
 
   const refresh = (site?: SiteView) => {
     void queryClient.invalidateQueries({ queryKey: ["sites"] });
@@ -69,11 +72,13 @@ export function SitesPage() {
         initialUrl={dialog?.url}
         initialAccount={dialog?.account}
         onClose={() => setDialog(null)}
-        onAdded={(site) => {
+        onAdded={(site, viaLink) => {
           setDialog(null);
           refresh(site);
+          if (viaLink) setSetupSite(site.id);
         }}
       />
+      <SetupDialog open={setupSite !== null} initialSiteId={setupSite ?? undefined} onClose={() => setSetupSite(null)} />
     </div>
   );
 }

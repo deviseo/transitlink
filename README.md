@@ -27,7 +27,7 @@
 - [x] 一键配置 Claude Code 和 Codex：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
 - [x] 托盘（macOS 是菜单栏）里切换站点：配置过的工具一起切过去，沿用在那个站点上选过的分组和模型；关掉窗口后留在托盘里运行
 - [x] 开启了人机验证（Turnstile 等）的站点：在应用里打开站点自己的登录页登录，登录后自动接入
-- [ ] 专属链接一键接入；读取 TransitHub 下发的站长品牌和推荐配置
+- [x] 专属链接一键接入：换上站长在 TransitHub 里设置的品牌（名称、logo、主题色、欢迎语），首页显示公告和客服，一键配置用站长推荐的分组和模型
 - [x] GitHub Actions 自动构建安装包，发布到 GitHub Releases
 - [x] 应用内自动更新（从第一个正式发布的版本开始生效）
 
@@ -39,6 +39,14 @@
 - 写之前先用这个 Key 测试连通，测试不通过就什么都不改。每次修改前把原文件备份到 `~/.transitlink/backups/`，第一次修改前的原文件一直保留。
 - 「还原」只把 TransitLink 改过的几项改回第一次配置之前的样子，你后来加的其他设置不受影响。
 - 用 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 换过配置目录的，按换过的目录处理。
+
+## 站长：给用户发专属链接
+
+在 [TransitHub](https://github.com/deviseo/transit-hub) 的「客户端」页面设置品牌、推荐的分组和模型、公告和客服，然后把生成的 `transitlink://connect?config=…` 链接发给用户。用户点链接（或者把链接粘贴到「接入站点」的网址栏）就能接入，登录后自动打开一键配置。
+
+- 链接里是 TransitHub 的公开配置接口 `…/api/client/v1/sites/<代码>`，用户的电脑要能访问它；TransitHub 只需要对外开放 `/api/client/` 开头的接口。
+- 配置只接受 https 地址；配置里的站点地址必须和用户登录的站点一致，别的链接改不了这个站点的品牌。
+- 站长改了配置后，TransitLink 下次启动时（超过 6 小时没更新的）会自动更新。
 
 ## 账号安全
 
@@ -94,6 +102,7 @@ src-tauri/               Rust 核心
   src/tools.rs           本机编程工具检测
   src/tray.rs            托盘菜单：切换站点、打开、退出
   src/webauth.rs         开了人机验证的站点：登录窗口
+  src/siteconfig.rs      专属链接和站长配置（品牌、推荐、公告、客服）
   src/settings.rs        应用设置（~/.transitlink/settings.json）
   src/paths.rs           本地目录（~/.transitlink）
 ```

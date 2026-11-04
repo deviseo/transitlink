@@ -36,8 +36,10 @@ export interface ToolOverview extends ToolStatus {
 export interface ToolPlan {
   kind: ToolKind;
   recommendedGroup: string | null;
-  /** 推荐的分组是按名称或平台认出来的。 */
+  /** 推荐的分组是站长指定的，或者按名称、平台认出来的。 */
   matched: boolean;
+  /** 站长推荐的模型。 */
+  recommendedModel: string | null;
 }
 
 export interface SetupPlan {
@@ -79,6 +81,21 @@ export interface SiteInfo {
   emailOnly: boolean;
 }
 
+/** 站长在 TransitHub 里设置的站点配置（用专属链接接入的站点才有）。 */
+export interface SiteConfig {
+  site: { name: string; baseUrl: string; platform: string };
+  brand: { name: string; logoUrl: string; color: string; welcome: string };
+  recommend: { claudeCode: { group: string; model: string }; codex: { group: string; model: string } };
+  notice: { content: string; updatedAt: string | null };
+  support: { type: string; label: string; value: string }[];
+}
+
+/** 专属链接读到的内容：配置地址和站长配置。 */
+export interface SiteLink {
+  configUrl: string;
+  config: SiteConfig;
+}
+
 export interface SiteView {
   id: string;
   name: string;
@@ -87,6 +104,7 @@ export interface SiteView {
   platform: Platform;
   account: string;
   addedAt: number;
+  config: SiteConfig | null;
 }
 
 export type LoginOutcome =
@@ -138,6 +156,17 @@ const previewSite: SiteView = {
   platform: "newapi",
   account: "demo",
   addedAt: 0,
+  config: null,
+};
+const previewConfig: SiteConfig = {
+  site: { name: "示例中转站", baseUrl: "https://relay.example.com", platform: "newapi" },
+  brand: { name: "极速中转", logoUrl: "", color: "#7c3aed", welcome: "欢迎使用极速中转，遇到问题随时找客服。" },
+  recommend: { claudeCode: { group: "claude", model: "" }, codex: { group: "codex", model: "gpt-6.1-sol" } },
+  notice: { content: "本周六 2:00–4:00 例行维护，期间可能短暂无法使用。", updatedAt: "2026-11-04T08:00:00Z" },
+  support: [
+    { type: "telegram", label: "Telegram 群", value: "https://t.me/example" },
+    { type: "qq", label: "QQ 群", value: "123456789" },
+  ],
 };
 const previewSites: SiteView[] = [];
 const previewKeys: KeySummary[] = [
@@ -254,8 +283,8 @@ export const setupPlan = (siteId: string) =>
     ],
     balanceUsd: 12.34,
     tools: [
-      { kind: "claudeCode", recommendedGroup: "claude", matched: true },
-      { kind: "codex", recommendedGroup: "codex", matched: true },
+      { kind: "claudeCode", recommendedGroup: "claude", matched: true, recommendedModel: null },
+      { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex.model || null },
     ],
   }), { siteId });
 
@@ -342,6 +371,28 @@ export const setCloseToTray = (enabled: boolean) =>
 
 /** 告诉桌面端界面语言，托盘菜单用同一种语言。 */
 export const setLanguage = (language: string) => call<null>("set_language", () => null, { language });
+
+/** 读取专属链接（或配置地址）指向的站长配置。预览时任何以 transitlink:// 开头的链接都返回示例配置。 */
+export const loadSiteLink = (link: string) =>
+  call<SiteLink>("load_site_link", async () => {
+    await pause(500);
+    if (!link.startsWith("transitlink://") && !link.includes("/api/client/v1/sites/")) previewError("linkInvalid");
+    return { configUrl: "https://hub.example.com/api/client/v1/sites/abcdefghij", config: previewConfig };
+  }, { link });
+
+/** 用专属链接接入后，记下站长配置。 */
+export const attachSiteLink = (id: string, configUrl: string) =>
+  call<SiteView>("attach_site_link", () => {
+    const site = previewSites.find((item) => item.id === id) ?? previewSite;
+    site.config = previewConfig;
+    return { ...site };
+  }, { id, configUrl });
+
+/** 更新站长配置（超过 6 小时没更新的才去读）。返回有没有更新。 */
+export const refreshSiteLinks = () => call<boolean>("refresh_site_links", () => false);
+
+/** 取走等着处理的专属链接（应用被链接打开，或运行中点了链接）。 */
+export const takePendingLink = () => call<string | null>("take_pending_link", () => null);
 
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;

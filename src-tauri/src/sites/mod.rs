@@ -57,6 +57,10 @@ pub enum SiteError {
     SessionExpired,
     /// 用户关掉了登录窗口（或者太久没登录完）。
     LoginCancelled,
+    /// 专属链接失效了（站长关掉或重置了链接）。
+    LinkNotFound,
+    /// 专属链接指向的配置有问题（格式不对，或者站点地址和登录的站点不一致）。
+    LinkInvalid,
     TokenNotAllowed(Option<String>),
     Site(Option<String>),
     Unexpected(String),
@@ -76,6 +80,8 @@ impl SiteError {
             SiteError::RateLimited => "rateLimited",
             SiteError::SessionExpired => "sessionExpired",
             SiteError::LoginCancelled => "loginCancelled",
+            SiteError::LinkNotFound => "linkNotFound",
+            SiteError::LinkInvalid => "linkInvalid",
             SiteError::TokenNotAllowed(_) => "tokenNotAllowed",
             SiteError::Site(_) => "site",
             SiteError::Unexpected(_) => "unexpected",

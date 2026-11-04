@@ -11,6 +11,7 @@ mod configure;
 mod paths;
 mod secrets;
 mod settings;
+mod siteconfig;
 mod sites;
 mod store;
 mod tools;
@@ -56,12 +57,16 @@ pub fn run() {
         .manage(accounts)
         .manage(configurator)
         .manage(settings)
+        .manage(commands::PendingLink::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             #[cfg(desktop)]
-            tray::create(_app.handle())?;
+            {
+                tray::create(_app.handle())?;
+                watch_site_links(_app);
+            }
             // Windows / Linux 的开发版和免安装版需要在运行时注册 transitlink:// 协议；
             // macOS 由安装包里的 Info.plist 注册。
             #[cfg(any(windows, target_os = "linux"))]
@@ -118,6 +123,10 @@ pub fn run() {
             commands::app_settings,
             commands::set_close_to_tray,
             commands::set_language,
+            commands::load_site_link,
+            commands::attach_site_link,
+            commands::refresh_site_links,
+            commands::take_pending_link,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TransitLink")
@@ -128,4 +137,35 @@ pub fn run() {
                 tray::show_main(_app);
             }
         });
+}
+
+/// 专属链接 `transitlink://connect?config=…`：冷启动时由链接打开，或者运行中又点了链接。
+/// 链接存到 PendingLink，再通知前端来取（前端还没准备好时，启动后会自己来取）。
+#[cfg(desktop)]
+fn watch_site_links(app: &tauri::App) {
+    use tauri::{Emitter, Manager};
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    let remember = |handle: &tauri::AppHandle, urls: &[url::Url]| -> bool {
+        let Some(link) = urls
+            .iter()
+            .find_map(|url| siteconfig::config_url_from(url.as_str()))
+        else {
+            return false;
+        };
+        if let Ok(mut slot) = handle.state::<commands::PendingLink>().0.lock() {
+            *slot = Some(link);
+        }
+        true
+    };
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        remember(app.handle(), &urls);
+    }
+    let handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        if remember(&handle, &event.urls()) {
+            tray::show_main(&handle);
+            let _ = handle.emit("site-link", ());
+        }
+    });
 }

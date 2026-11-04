@@ -67,7 +67,9 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
     // 一个一个来：每个工具都要建 Key、测试、写配置。
     for (const kind of picked) {
       try {
-        const outcome = await applyTool(kind, siteId, groupFor(kind) || null);
+        // 站长推荐了模型就用它（所选分组没有这个模型时，桌面端会自动换一个）。
+        const model = plan.data?.tools.find((tool) => tool.kind === kind)?.recommendedModel ?? null;
+        const outcome = await applyTool(kind, siteId, groupFor(kind) || null, model);
         setRuns((current) => ({ ...current, [kind]: { status: "done", outcome } }));
       } catch (error) {
         setRuns((current) => ({ ...current, [kind]: { status: "failed", error } }));
@@ -160,6 +162,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                           {plan.data.groups.map((group) => (
                             <option key={group.id} value={group.id}>
                               {groupLabel(group)}
+                              {toolPlan?.matched && toolPlan.recommendedGroup === group.id ? ` · ${t("setup.recommendedTag")}` : ""}
                             </option>
                           ))}
                         </select>
@@ -172,6 +175,9 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                             family: t(kind === "claudeCode" ? "setup.familyClaudeCode" : "setup.familyCodex"),
                           })}
                         </p>
+                      )}
+                      {chosen[kind] && toolPlan?.recommendedModel && (
+                        <p className="mt-2 text-xs text-muted-foreground">{t("setup.recommendedModel", { model: toolPlan.recommendedModel })}</p>
                       )}
                       {chosen[kind] && !installed && <p className="mt-2 text-xs text-muted-foreground">{t("setup.notInstalled")}</p>}
                     </li>
