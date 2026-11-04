@@ -32,6 +32,15 @@
           "transitlink"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3Njk2QkNFNDVEQzZDREEKUldUYWJOeEZ6bXRweC9OZ2VudnlLVVBaRXRmL2loVEppMGE4VEN5NWhrQXhDcGpjMWFiU0UwWXMK",
+      "endpoints": [
+        "https://github.com/deviseo/transitlink/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
@@ -50,6 +59,7 @@
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "11.0"
-    }
+    },
+    "createUpdaterArtifacts": true
   }
 }

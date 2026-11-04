@@ -5,7 +5,10 @@ use tauri::{AppHandle, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::accounts::{Accounts, LoginOutcome, SiteView};
+use crate::configure::probe::TestResult;
+use crate::configure::{ApplyOutcome, ConfigError, Configurator, SetupPlan, ToolOverview};
 use crate::sites::{AccountSummary, GroupSummary, KeySummary, SiteError, SiteInfo};
+use crate::tools::ToolKind;
 use crate::{paths, tools};
 
 #[derive(Debug, Serialize)]
@@ -17,7 +20,7 @@ pub struct AppInfo {
     platform: String,
 }
 
-/// 命令出错时返回给前端：`code` 对应界面文案（sites.errors.*），`message` 是站点自己的说明。
+/// 命令出错时返回给前端：`code` 对应界面文案（errors.*），`message` 是站点自己的说明或出错的文件。
 #[derive(Debug, Serialize)]
 pub struct CommandError {
     code: String,
@@ -29,6 +32,26 @@ impl From<SiteError> for CommandError {
         CommandError {
             code: error.code().to_string(),
             message: error.message(),
+        }
+    }
+}
+
+impl From<ConfigError> for CommandError {
+    fn from(error: ConfigError) -> Self {
+        let (code, message) = match error {
+            ConfigError::Invalid => ("configInvalid", None),
+            ConfigError::InvalidFile(path) => ("configInvalid", Some(path)),
+            ConfigError::Io(message) => ("configWrite", Some(message)),
+            ConfigError::NotConfigured => ("notConfigured", None),
+            ConfigError::Test(TestResult::NoFamilyModels { .. }) => ("noFamilyModels", None),
+            ConfigError::Test(TestResult::BadKey { message }) => ("badKey", message),
+            ConfigError::Test(TestResult::Failed { message }) => ("probeFailed", message),
+            ConfigError::Test(TestResult::Ok { .. }) => ("unexpected", None),
+            ConfigError::Site(error) => return error.into(),
+        };
+        CommandError {
+            code: code.to_string(),
+            message,
         }
     }
 }
@@ -47,12 +70,151 @@ pub fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
-/// 检测本机的编程工具（第一期：Claude Code、Codex）。要运行 `--version`，放到阻塞线程里执行，不卡界面。
+/// 检测本机的编程工具（第一期：Claude Code、Codex）和它们现在的配置。要运行 `--version`，
+/// 放到阻塞线程里执行，不卡界面。
 #[tauri::command]
-pub async fn detect_tools() -> Vec<tools::ToolStatus> {
-    tauri::async_runtime::spawn_blocking(tools::detect_all)
+pub async fn detect_tools(
+    configurator: State<'_, Configurator>,
+) -> CommandResult<Vec<ToolOverview>> {
+    let statuses = tauri::async_runtime::spawn_blocking(tools::detect_all)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+    Ok(configurator.overview(statuses))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+}
+
+#[cfg(desktop)]
+fn update_error(error: tauri_plugin_updater::Error) -> CommandError {
+    CommandError {
+        code: "updateFailed".to_string(),
+        message: Some(error.to_string()),
+    }
+}
+
+/// 检查有没有新版本：读 GitHub Releases 上最新正式版的 `latest.json`，签名用内置的公钥校验。
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> CommandResult<Option<UpdateInfo>> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_updater::UpdaterExt;
+        let update = app
+            .updater()
+            .map_err(update_error)?
+            .check()
+            .await
+            .map_err(update_error)?;
+        Ok(update.map(|update| UpdateInfo {
+            version: update.version.clone(),
+            notes: update.body.clone(),
+        }))
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(None)
+    }
+}
+
+/// 下载并安装新版本，装好后重启应用。
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> CommandResult<()> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_updater::UpdaterExt;
+        let update = app
+            .updater()
+            .map_err(update_error)?
+            .check()
+            .await
+            .map_err(update_error)?;
+        if let Some(update) = update {
+            update
+                .download_and_install(|_, _| {}, || {})
+                .await
+                .map_err(update_error)?;
+            app.restart();
+        }
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+/// 一键配置前的选项：站点的分组和每个工具推荐的分组。
+#[tauri::command]
+pub async fn setup_plan(
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    site_id: String,
+) -> CommandResult<SetupPlan> {
+    Ok(configurator.plan(&accounts, &site_id).await?)
+}
+
+/// 一键配置一个工具：专用 Key → 测试 → 备份 → 写配置。
+#[tauri::command]
+pub async fn apply_tool(
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    kind: ToolKind,
+    site_id: String,
+    group_id: Option<String>,
+    model: Option<String>,
+) -> CommandResult<ApplyOutcome> {
+    Ok(configurator
+        .apply(
+            &accounts,
+            kind,
+            &site_id,
+            group_id.as_deref(),
+            model.as_deref(),
+        )
+        .await?)
+}
+
+/// 用工具配置里现在的地址和 Key 测试连通。
+#[tauri::command]
+pub async fn test_tool(
+    configurator: State<'_, Configurator>,
+    kind: ToolKind,
+) -> CommandResult<TestResult> {
+    Ok(configurator.test(kind).await?)
+}
+
+/// 工具可选的模型。
+#[tauri::command]
+pub async fn tool_models(
+    configurator: State<'_, Configurator>,
+    kind: ToolKind,
+) -> CommandResult<Vec<String>> {
+    Ok(configurator.models(kind).await?)
+}
+
+/// 换模型（Claude Code 传空表示用它自己的默认模型）。
+#[tauri::command]
+pub async fn set_tool_model(
+    configurator: State<'_, Configurator>,
+    kind: ToolKind,
+    model: Option<String>,
+) -> CommandResult<()> {
+    Ok(configurator.set_model(kind, model.as_deref()).await?)
+}
+
+/// 还原到第一次用 TransitLink 配置之前。
+#[tauri::command]
+pub async fn restore_tool(
+    configurator: State<'_, Configurator>,
+    kind: ToolKind,
+) -> CommandResult<()> {
+    Ok(configurator.restore(kind).await?)
 }
 
 /// 识别站点类型和登录要求。

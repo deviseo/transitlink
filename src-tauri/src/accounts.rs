@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use rand::RngCore;
 use serde::Serialize;
@@ -99,13 +99,6 @@ fn new_id() -> String {
     let mut bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn now_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_secs())
-        .unwrap_or(0)
 }
 
 fn storage(error: String) -> SiteError {
@@ -293,7 +286,7 @@ impl Accounts {
     }
 
     /// 保存站点记录和凭证。同一站点同一账号重新登录时沿用原来的记录。
-    fn save(
+    pub(crate) fn save(
         &self,
         info: SiteInfo,
         account: &str,
@@ -309,7 +302,7 @@ impl Accounts {
             account: account.to_string(),
             added_at: existing
                 .map(|site| site.added_at)
-                .unwrap_or_else(now_seconds),
+                .unwrap_or_else(crate::clock::now_secs),
         };
         self.store_credential(&record.id, credential)?;
         self.store.upsert(record.clone()).map_err(storage)?;
@@ -334,6 +327,93 @@ impl Accounts {
             .ok_or(SiteError::SessionExpired)?;
         let credential = serde_json::from_str(&json).map_err(|_| SiteError::SessionExpired)?;
         Ok((record, credential))
+    }
+
+    /// 站点记录（不含凭证）。
+    pub fn site(&self, id: &str) -> Result<SiteRecord, SiteError> {
+        self.store
+            .get(id)
+            .map_err(storage)?
+            .ok_or(SiteError::SessionExpired)
+    }
+
+    /// 给工具用的专用 Key：这个分组里已经有同名、启用中的 Key 就直接用，否则新建一个。
+    /// 返回完整 Key（只在 Rust 侧使用，写进工具配置）和是否新建。
+    pub async fn tool_key(
+        &self,
+        id: &str,
+        name: &str,
+        group_id: Option<&str>,
+    ) -> Result<(KeySummary, bool), SiteError> {
+        let name = name.to_string();
+        let group_id = group_id.map(str::to_string);
+        self.call(id, |http, info, credential| {
+            let name = name.clone();
+            let group_id = group_id.clone();
+            Box::pin(async move {
+                match info.platform {
+                    Platform::Newapi => {
+                        // new-api 的 Key 直接记分组名；空分组就是用户自己的分组。
+                        let wanted = group_id.clone().unwrap_or_default();
+                        let existing = newapi::list_keys(http, info, credential)
+                            .await?
+                            .into_iter()
+                            .filter(|key| {
+                                key.enabled
+                                    && key.name == name
+                                    && key.group.clone().unwrap_or_default() == wanted
+                            })
+                            .max_by_key(|key| key.id.parse::<i64>().unwrap_or(0));
+                        match existing {
+                            Some(key) => {
+                                Ok((newapi::unmask(http, info, credential, key).await?, false))
+                            }
+                            None => Ok((
+                                newapi::create_key(
+                                    http,
+                                    info,
+                                    credential,
+                                    &name,
+                                    group_id.as_deref(),
+                                )
+                                .await?,
+                                true,
+                            )),
+                        }
+                    }
+                    Platform::Sub2api => {
+                        // sub2api 的 Key 列表里分组显示为名字，按 ID 找到名字再比较。
+                        let groups = sub2api::groups(http, info, credential).await?;
+                        let wanted = group_id.as_ref().and_then(|id| {
+                            groups
+                                .iter()
+                                .find(|group| &group.id == id)
+                                .map(|group| group.name.clone())
+                        });
+                        let existing = sub2api::list_keys(http, info, credential)
+                            .await?
+                            .into_iter()
+                            .filter(|key| key.enabled && key.name == name && key.group == wanted)
+                            .max_by_key(|key| key.id.parse::<i64>().unwrap_or(0));
+                        match existing {
+                            Some(key) => Ok((key, false)),
+                            None => Ok((
+                                sub2api::create_key(
+                                    http,
+                                    info,
+                                    credential,
+                                    &name,
+                                    group_id.as_deref(),
+                                )
+                                .await?,
+                                true,
+                            )),
+                        }
+                    }
+                }
+            })
+        })
+        .await
     }
 
     pub fn sites(&self) -> Result<Vec<SiteView>, SiteError> {

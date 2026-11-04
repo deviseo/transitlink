@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Globe, House, Info, Settings, Wrench, type LucideIcon } from "lucide-react";
 import { applyBrandColor, defaultBrand } from "../../brand";
+import { UpdateBanner } from "./UpdateBanner";
 import { getAppInfo } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import { inDesktop } from "../../lib/tauri";
@@ -65,6 +66,7 @@ export function AppLayout() {
             {t("common.previewMode")}
           </div>
         )}
+        <UpdateBanner />
         <div className="mx-auto max-w-4xl px-8 py-8">
           <Outlet />
         </div>

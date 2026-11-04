@@ -1,0 +1,436 @@
+//! 一键配置的端到端测试：模拟一个 sub2api 站点，工具配置写到临时目录。
+
+use std::path::PathBuf;
+
+use serde_json::{Value, json};
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use super::*;
+use crate::secrets::MemoryStore;
+use crate::sites::{Credential, SiteInfo};
+use crate::store::SiteStore;
+
+fn ok(data: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .set_body_json(json!({ "code": 0, "message": "success", "data": data }))
+}
+
+fn models(ids: &[&str]) -> ResponseTemplate {
+    let data: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "object": "model" }))
+        .collect();
+    ResponseTemplate::new(200).set_body_json(json!({ "object": "list", "data": data }))
+}
+
+struct Fixture {
+    dir: PathBuf,
+    home: PathBuf,
+    accounts: Accounts,
+    configurator: Configurator,
+    site_id: String,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn fixture(server: &MockServer, name: &str) -> Fixture {
+    let dir = std::env::temp_dir().join(format!(
+        "transitlink-configure-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let accounts = Accounts::new(
+        Http::new(),
+        SiteStore::new(dir.join("data/sites.json")),
+        Box::new(MemoryStore::default()),
+    );
+    let info = SiteInfo {
+        platform: Platform::Sub2api,
+        base_url: server.uri(),
+        name: "Relay".into(),
+        logo_url: None,
+        captcha_required: false,
+        password_login_disabled: false,
+        email_only: true,
+        quota_per_unit: None,
+        password_encryption: false,
+    };
+    let credential = Credential::Sub2api {
+        access_token: "at".into(),
+        refresh_token: "rt".into(),
+    };
+    let site = accounts.save(info, "a@example.com", &credential).unwrap();
+    let configurator = Configurator::new(
+        Http::new(),
+        home.clone(),
+        dir.join("data"),
+        Box::new(|_| None),
+    );
+    Fixture {
+        dir,
+        home,
+        accounts,
+        configurator,
+        site_id: site.id,
+    }
+}
+
+fn status(kind: ToolKind, fixture: &Fixture) -> ToolStatus {
+    let path = kind.config_path(&fixture.home, &|_| None);
+    ToolStatus {
+        kind,
+        installed: true,
+        binary_path: None,
+        version: None,
+        config_exists: path.is_file(),
+        config_path: path.display().to_string(),
+    }
+}
+
+fn overview(kind: ToolKind, fixture: &Fixture) -> ToolOverview {
+    fixture
+        .configurator
+        .overview(vec![status(kind, fixture)])
+        .remove(0)
+}
+
+/// `codex_creations`：这个测试里应该新建几次 Codex 专用 Key。
+async fn mount_site(server: &MockServer, codex_creations: u64) {
+    Mock::given(method("GET"))
+        .and(path("/api/v1/groups/available"))
+        .respond_with(ok(json!([
+            { "id": 1, "name": "Claude Max", "platform": "anthropic", "rate_multiplier": 1 },
+            { "id": 2, "name": "Codex", "platform": "openai", "rate_multiplier": 1 }
+        ])))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/auth/me"))
+        .respond_with(ok(json!({ "email": "a@example.com", "balance": 5 })))
+        .mount(server)
+        .await;
+    // 第一次列 Key 时还没有专用 Key，之后就有了。
+    Mock::given(method("GET"))
+        .and(path("/api/v1/keys"))
+        .respond_with(ok(json!({ "items": [] })))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/keys"))
+        .respond_with(ok(json!({ "items": [
+            { "id": 7, "name": "TransitLink Codex", "key": "sk-codex", "group_id": 2, "status": "active" }
+        ] })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/keys"))
+        .and(body_partial_json(json!({ "name": "TransitLink Codex", "group_id": 2 })))
+        .respond_with(ok(json!(
+            { "id": 7, "name": "TransitLink Codex", "key": "sk-codex", "group_id": 2, "status": "active" }
+        )))
+        .expect(codex_creations)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/keys"))
+        .and(body_partial_json(json!({ "name": "TransitLink Claude Code", "group_id": 1 })))
+        .respond_with(ok(json!(
+            { "id": 8, "name": "TransitLink Claude Code", "key": "sk-claude", "group_id": 1, "status": "active" }
+        )))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/keys"))
+        .and(body_partial_json(json!({ "name": "TransitLink Claude Code", "group_id": 2 })))
+        .respond_with(ok(json!(
+            { "id": 9, "name": "TransitLink Claude Code", "key": "sk-wrong-group", "group_id": 2, "status": "active" }
+        )))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("Authorization", "Bearer sk-codex"))
+        .respond_with(models(&["gpt-5.5", "gpt-6.1-mini", "gpt-6.1-sol"]))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("Authorization", "Bearer sk-claude"))
+        .respond_with(models(&["claude-opus-5-5", "claude-sonnet-5-5"]))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("Authorization", "Bearer sk-wrong-group"))
+        .respond_with(models(&["gpt-6.1-sol"]))
+        .mount(server)
+        .await;
+}
+
+const CODEX_BEFORE: &str = "# 自己的设置\nmodel = \"o3\"\napproval_policy = \"never\"\n";
+
+#[tokio::test]
+async fn configures_tests_switches_models_and_restores_codex() {
+    let server = MockServer::start().await;
+    mount_site(&server, 1).await;
+    let fixture = fixture(&server, "codex");
+    let config = fixture.home.join(".codex/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, CODEX_BEFORE).unwrap();
+
+    let plan = fixture
+        .configurator
+        .plan(&fixture.accounts, &fixture.site_id)
+        .await
+        .unwrap();
+    assert_eq!(plan.balance_usd, Some(5.0));
+    let codex_plan = plan
+        .tools
+        .iter()
+        .find(|tool| tool.kind == ToolKind::Codex)
+        .unwrap();
+    assert_eq!(codex_plan.recommended_group.as_deref(), Some("2"));
+    assert!(codex_plan.matched);
+    assert_eq!(
+        overview(ToolKind::Codex, &fixture).state,
+        ConfigState::NotConfigured
+    );
+
+    let outcome = fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::Codex,
+            &fixture.site_id,
+            Some("2"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.key_created);
+    assert_eq!(outcome.model.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(outcome.group.as_deref(), Some("Codex"));
+    assert_eq!(
+        outcome.test,
+        TestResult::Ok {
+            models: 3,
+            family: 3
+        }
+    );
+
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(written.contains("experimental_bearer_token = \"sk-codex\""));
+    assert!(written.contains(&format!("base_url = \"{}/v1\"", server.uri())));
+    assert!(written.contains("approval_policy = \"never\""));
+    let view = overview(ToolKind::Codex, &fixture);
+    assert_eq!(view.state, ConfigState::Configured);
+    let applied = view.applied.unwrap();
+    assert_eq!(applied.site_name, "Relay");
+    assert_eq!(applied.key_name, "TransitLink Codex");
+
+    // 再配一次：沿用已有的专用 Key（POST 只调用过一次）。
+    let again = fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::Codex,
+            &fixture.site_id,
+            Some("2"),
+            Some("gpt-5.5"),
+        )
+        .await
+        .unwrap();
+    assert!(!again.key_created);
+    assert_eq!(again.model.as_deref(), Some("gpt-5.5"));
+
+    assert_eq!(
+        fixture.configurator.test(ToolKind::Codex).await.unwrap(),
+        TestResult::Ok {
+            models: 3,
+            family: 3
+        }
+    );
+    let listed = fixture.configurator.models(ToolKind::Codex).await.unwrap();
+    assert_eq!(listed.len(), 3);
+    fixture
+        .configurator
+        .set_model(ToolKind::Codex, Some("gpt-6.1-sol"))
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("model = \"gpt-6.1-sol\"")
+    );
+    assert_eq!(
+        overview(ToolKind::Codex, &fixture)
+            .applied
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("gpt-6.1-sol")
+    );
+
+    // 别的程序改了配置：显示「已被改动」。
+    let changed = std::fs::read_to_string(&config).unwrap().replace(
+        "model_provider = \"transitlink\"",
+        "model_provider = \"openai\"",
+    );
+    std::fs::write(&config, changed).unwrap();
+    assert_eq!(
+        overview(ToolKind::Codex, &fixture).state,
+        ConfigState::Changed
+    );
+
+    // 还原：回到第一次配置前的样子，记录删掉，原文件备份还在。
+    fixture.configurator.restore(ToolKind::Codex).await.unwrap();
+    let restored = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        restored.starts_with("# 自己的设置\nmodel = \"o3\"\n"),
+        "{restored}"
+    );
+    assert!(!restored.contains("transitlink"));
+    assert!(!restored.contains("model_provider"));
+    assert_eq!(
+        overview(ToolKind::Codex, &fixture).state,
+        ConfigState::NotConfigured
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.dir.join("data/backups/codex/original-config.toml"))
+            .unwrap(),
+        CODEX_BEFORE
+    );
+    assert_eq!(
+        fixture
+            .configurator
+            .restore(ToolKind::Codex)
+            .await
+            .unwrap_err(),
+        ConfigError::NotConfigured
+    );
+}
+
+#[tokio::test]
+async fn configures_claude_code_and_skips_onboarding() {
+    let server = MockServer::start().await;
+    mount_site(&server, 0).await;
+    let fixture = fixture(&server, "claude");
+    let settings = fixture.home.join(".claude/settings.json");
+
+    // 选错分组（没有 Claude 模型）：报错，什么都不写。
+    let error = fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::ClaudeCode,
+            &fixture.site_id,
+            Some("2"),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ConfigError::Test(TestResult::NoFamilyModels { models: 1 })
+    );
+    assert!(!settings.exists());
+    assert!(!fixture.home.join(".claude.json").exists());
+
+    let outcome = fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::ClaudeCode,
+            &fixture.site_id,
+            Some("1"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.model, None,
+        "Claude Code keeps its own default model"
+    );
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(written["env"]["ANTHROPIC_BASE_URL"], json!(server.uri()));
+    assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("sk-claude"));
+    let user: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture.home.join(".claude.json")).unwrap())
+            .unwrap();
+    assert_eq!(user["hasCompletedOnboarding"], json!(true));
+    assert_eq!(
+        overview(ToolKind::ClaudeCode, &fixture).state,
+        ConfigState::Configured
+    );
+
+    // 原来没有 settings.json：还原就删掉它。
+    fixture
+        .configurator
+        .restore(ToolKind::ClaudeCode)
+        .await
+        .unwrap();
+    assert!(!settings.exists());
+}
+
+#[test]
+fn recommends_groups_by_platform_or_name() {
+    let group = |id: &str, name: &str, description: &str, platform: Option<&str>| GroupSummary {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        ratio: None,
+        platform: platform.map(str::to_string),
+    };
+    let newapi = [
+        group("default", "default", "默认分组", None),
+        group("cc", "cc", "", None),
+        group("plus", "plus", "GPT-6 专线", None),
+    ];
+    assert_eq!(
+        recommend(
+            ToolKind::ClaudeCode,
+            Platform::Newapi,
+            &newapi,
+            Some("default")
+        ),
+        (Some("cc".into()), true)
+    );
+    assert_eq!(
+        recommend(ToolKind::Codex, Platform::Newapi, &newapi, Some("default")),
+        (Some("plus".into()), true)
+    );
+    let plain = [
+        group("vip", "vip", "", None),
+        group("default", "default", "", None),
+    ];
+    assert_eq!(
+        recommend(ToolKind::Codex, Platform::Newapi, &plain, Some("vip")),
+        (Some("vip".into()), false),
+        "falls back to the user's own group"
+    );
+    let sub2api = [
+        group("3", "Gemini", "", Some("gemini")),
+        group("4", "Claude", "", Some("anthropic")),
+    ];
+    assert_eq!(
+        recommend(ToolKind::ClaudeCode, Platform::Sub2api, &sub2api, None),
+        (Some("4".into()), true)
+    );
+    assert_eq!(
+        recommend(ToolKind::Codex, Platform::Sub2api, &sub2api, None),
+        (Some("3".into()), false)
+    );
+    assert_eq!(
+        recommend(ToolKind::Codex, Platform::Sub2api, &[], None),
+        (None, false)
+    );
+}

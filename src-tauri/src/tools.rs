@@ -1,4 +1,4 @@
-//! 本机编程工具的检测（第一期：Claude Code、Codex）。写入配置、备份与还原在后续步骤加入。
+//! 本机编程工具的检测（第一期：Claude Code、Codex）。写入配置在 `configure` 模块。
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolKind {
     ClaudeCode,
@@ -25,6 +25,30 @@ impl ToolKind {
         }
     }
 
+    /// 和前端一致的 ID，也用在 `~/.transitlink/tools.json` 里。
+    pub fn id(self) -> &'static str {
+        match self {
+            ToolKind::ClaudeCode => "claudeCode",
+            ToolKind::Codex => "codex",
+        }
+    }
+
+    /// 备份目录名：`~/.transitlink/backups/<名字>`。
+    pub fn backup_dir(self) -> &'static str {
+        match self {
+            ToolKind::ClaudeCode => "claude-code",
+            ToolKind::Codex => "codex",
+        }
+    }
+
+    /// 一键配置时给这个工具建的专用 Key 的名字。
+    pub fn key_name(self) -> &'static str {
+        match self {
+            ToolKind::ClaudeCode => "TransitLink Claude Code",
+            ToolKind::Codex => "TransitLink Codex",
+        }
+    }
+
     /// 配置文件位置：Claude Code 支持用 `CLAUDE_CONFIG_DIR` 改目录，Codex 支持 `CODEX_HOME`。
     pub fn config_path(self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
         let (variable, default_dir, file) = match self {
@@ -37,6 +61,18 @@ impl ToolKind {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(default_dir))
             .join(file)
+    }
+}
+
+/// Claude Code 的用户状态文件 `.claude.json`（记录是否完成首次引导等）：默认在主目录下；
+/// 用 `CLAUDE_CONFIG_DIR` 换了目录时在那个目录里。
+pub fn claude_user_config_path(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    let settings = ToolKind::ClaudeCode.config_path(home, env);
+    let dir = settings.parent().unwrap_or(home);
+    if dir == home.join(".claude") {
+        home.join(".claude.json")
+    } else {
+        dir.join(".claude.json")
     }
 }
 
@@ -102,8 +138,14 @@ pub fn search_path(home: &Path, inherited: Option<OsString>) -> OsString {
         PathBuf::from("/usr/local/bin"),
     ]);
     #[cfg(windows)]
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        extra.push(PathBuf::from(appdata).join("npm"));
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            extra.push(PathBuf::from(appdata).join("npm"));
+        }
+        // Codex 官方安装脚本在 Windows 上的安装位置。
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            extra.push(PathBuf::from(local).join("Programs\\OpenAI\\Codex\\bin"));
+        }
     }
     if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
         let mut versions: Vec<PathBuf> = entries
@@ -220,6 +262,15 @@ mod tests {
             ToolKind::Codex.config_path(home, &custom),
             home.join(".codex/config.toml"),
             "blank overrides are ignored"
+        );
+
+        assert_eq!(
+            claude_user_config_path(home, &none),
+            home.join(".claude.json")
+        );
+        assert_eq!(
+            claude_user_config_path(home, &custom),
+            PathBuf::from("/data/claude/.claude.json")
         );
     }
 

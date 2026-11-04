@@ -11,6 +11,55 @@ export interface ToolStatus {
   configExists: boolean;
 }
 
+/** 工具配置的状态：没配置、用 TransitLink 配好了、配好后被别的程序改了、用户自己配了别的服务、配置文件格式有误。 */
+export type ConfigState = "notConfigured" | "configured" | "changed" | "other" | "invalid";
+
+/** 用 TransitLink 配置时记下的信息。 */
+export interface AppliedView {
+  siteId: string;
+  siteName: string;
+  keyName: string;
+  group: string | null;
+  model: string | null;
+  appliedAt: number;
+}
+
+/** 工具页的一张卡片：检测结果加配置状态。 */
+export interface ToolOverview extends ToolStatus {
+  state: ConfigState;
+  applied: AppliedView | null;
+  currentBaseUrl: string | null;
+  currentModel: string | null;
+  currentProvider: string | null;
+}
+
+export interface ToolPlan {
+  kind: ToolKind;
+  recommendedGroup: string | null;
+  /** 推荐的分组是按名称或平台认出来的。 */
+  matched: boolean;
+}
+
+export interface SetupPlan {
+  groups: GroupSummary[];
+  balanceUsd: number | null;
+  tools: ToolPlan[];
+}
+
+export type TestResult =
+  | { status: "ok"; models: number; family: number }
+  | { status: "noFamilyModels"; models: number }
+  | { status: "badKey"; message: string | null }
+  | { status: "failed"; message: string | null };
+
+export interface ApplyOutcome {
+  keyName: string;
+  keyCreated: boolean;
+  group: string | null;
+  model: string | null;
+  test: TestResult;
+}
+
 export interface AppInfo {
   name: string;
   version: string;
@@ -67,7 +116,7 @@ export interface GroupSummary {
   platform: string | null;
 }
 
-/** Rust 命令返回的错误：code 对应 sites.errors.* 文案，message 是站点自己的说明。 */
+/** Rust 命令返回的错误：code 对应 errors.* 文案，message 是站点自己的说明或出错的文件。 */
 export interface CommandError {
   code: string;
   message: string | null;
@@ -101,11 +150,19 @@ function previewError(code: string): never {
 export const getAppInfo = () =>
   call<AppInfo>("app_info", () => ({ name: "TransitLink", version: "0.1.0", dataDir: "~/.transitlink", platform: "browser" }));
 
-export const detectTools = () =>
-  call<ToolStatus[]>("detect_tools", () => [
-    { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.0.14", configPath: "~/.claude/settings.json", configExists: true },
-    { kind: "codex", installed: false, binaryPath: null, version: null, configPath: "~/.codex/config.toml", configExists: false },
-  ]);
+const previewTools: ToolOverview[] = [
+  { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.1.300", configPath: "~/.claude/settings.json", configExists: true, state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null },
+  { kind: "codex", installed: false, binaryPath: null, version: null, configPath: "~/.codex/config.toml", configExists: false, state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null },
+];
+const previewModels: Record<ToolKind, string[]> = {
+  claudeCode: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"],
+  codex: ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.5", "claude-opus-5-5"],
+};
+const previewTool = (kind: ToolKind) => previewTools.find((tool) => tool.kind === kind) as ToolOverview;
+const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+/** 检测本机的工具和它们现在的配置。 */
+export const detectTools = () => call<ToolOverview[]>("detect_tools", () => previewTools.map((tool) => ({ ...tool })));
 
 export const detectSite = (url: string) =>
   call<SiteInfo>("detect_site", () => {
@@ -164,6 +221,79 @@ export const createSiteKey = (id: string, name: string, group: string | null) =>
     previewKeys.unshift(key);
     return { ...key };
   }, { id, name, group });
+
+/** 一键配置前的选项：站点的分组和每个工具推荐的分组。 */
+export const setupPlan = (siteId: string) =>
+  call<SetupPlan>("setup_plan", () => ({
+    groups: [
+      { id: "default", name: "default", description: "默认分组", ratio: 1, platform: null },
+      { id: "claude", name: "claude", description: "Claude 专用", ratio: 1.2, platform: null },
+      { id: "codex", name: "codex", description: "Codex 专用", ratio: 1, platform: null },
+    ],
+    balanceUsd: 12.34,
+    tools: [
+      { kind: "claudeCode", recommendedGroup: "claude", matched: true },
+      { kind: "codex", recommendedGroup: "codex", matched: true },
+    ],
+  }), { siteId });
+
+/** 一键配置一个工具：专用 Key → 测试 → 备份 → 写配置。预览时选错分组（Claude Code 选 codex）演示失败。 */
+export const applyTool = (kind: ToolKind, siteId: string, groupId: string | null, model: string | null = null) =>
+  call<ApplyOutcome>("apply_tool", async () => {
+    await pause(700);
+    if (kind === "claudeCode" && groupId === "codex") previewError("noFamilyModels");
+    const site = previewSites.find((item) => item.id === siteId) ?? previewSite;
+    const chosen = kind === "codex" ? (model ?? "gpt-6.1-sol") : model;
+    const keyName = kind === "codex" ? "TransitLink Codex" : "TransitLink Claude Code";
+    Object.assign(previewTool(kind), {
+      state: "configured",
+      configExists: true,
+      applied: { siteId, siteName: site.name, keyName, group: groupId, model: chosen, appliedAt: Math.floor(Date.now() / 1000) },
+      currentBaseUrl: site.baseUrl,
+      currentModel: chosen,
+      currentProvider: kind === "codex" ? "transitlink" : null,
+    } satisfies Partial<ToolOverview>);
+    const family = previewModels[kind].filter((id) => (kind === "codex" ? id.startsWith("gpt-") : id.includes("claude"))).length;
+    return { keyName, keyCreated: true, group: groupId, model: chosen, test: { status: "ok", models: previewModels[kind].length, family } };
+  }, { kind, siteId, groupId, model });
+
+/** 用工具配置里现在的地址和 Key 测试连通。 */
+export const testTool = (kind: ToolKind) =>
+  call<TestResult>("test_tool", async () => {
+    await pause(500);
+    if (previewTool(kind).state !== "configured") previewError("notConfigured");
+    return { status: "ok", models: 4, family: 3 };
+  }, { kind });
+
+/** 工具可选的模型（适合这个工具的排在前面）。 */
+export const toolModels = (kind: ToolKind) => call<string[]>("tool_models", () => [...previewModels[kind]], { kind });
+
+/** 换模型；Claude Code 传 null 表示用它自己的默认模型。 */
+export const setToolModel = (kind: ToolKind, model: string | null) =>
+  call<null>("set_tool_model", () => {
+    const tool = previewTool(kind);
+    tool.currentModel = model;
+    if (tool.applied) tool.applied = { ...tool.applied, model };
+    return null;
+  }, { kind, model });
+
+/** 还原到第一次用 TransitLink 配置之前。 */
+export const restoreTool = (kind: ToolKind) =>
+  call<null>("restore_tool", () => {
+    Object.assign(previewTool(kind), { state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null } satisfies Partial<ToolOverview>);
+    return null;
+  }, { kind });
+
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+}
+
+/** 检查有没有新版本（GitHub Releases 上最新的正式版）。预览时总是最新。 */
+export const checkUpdate = () => call<UpdateInfo | null>("check_update", () => null);
+
+/** 下载并安装新版本，装好后应用会自动重启。 */
+export const installUpdate = () => call<null>("install_update", () => null);
 
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;

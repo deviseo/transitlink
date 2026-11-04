@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Check, KeyRound, Link2, Sparkles, Terminal } from "lucide-react";
-import { buttonVariants } from "../components/ui/button";
+import { SetupDialog } from "../components/tools/SetupDialog";
+import { Button, buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { detectTools, listSites } from "../lib/api";
 
@@ -10,14 +12,27 @@ export function HomePage() {
   const { t } = useTranslation();
   const { data: tools } = useQuery({ queryKey: ["tools"], queryFn: detectTools });
   const { data: sites } = useQuery({ queryKey: ["sites"], queryFn: listSites });
+  const [setupOpen, setSetupOpen] = useState(false);
   const installed = (tools ?? []).filter((tool) => tool.installed).map((tool) => t(`tools.${tool.kind}`));
+  const configured = (tools ?? []).filter((tool) => tool.state === "configured").map((tool) => t(`tools.${tool.kind}`));
   // 接入站点时就完成了登录，所以有站点即前两步完成。
   const connected = (sites ?? []).length > 0;
 
   const steps = [
     { title: t("home.step1"), description: t("home.step1Desc"), icon: Link2, done: connected },
     { title: t("home.step2"), description: t("home.step2Desc"), icon: KeyRound, done: connected },
-    { title: t("home.step3"), description: t("home.step3Desc"), icon: Sparkles, done: false },
+    {
+      title: t("home.step3"),
+      description: configured.length > 0 ? t("home.configured", { names: configured.join(t("common.separator")) }) : t("home.step3Desc"),
+      icon: Sparkles,
+      done: configured.length > 0,
+      action: connected && (
+        <Button size="sm" className="mt-3" variant={configured.length > 0 ? "secondary" : "primary"} onClick={() => setSetupOpen(true)}>
+          <Sparkles className="h-4 w-4" aria-hidden />
+          {configured.length > 0 ? t("tools.reconfigure") : t("tools.configure")}
+        </Button>
+      ),
+    },
   ];
 
   return (
@@ -43,6 +58,7 @@ export function HomePage() {
               </div>
               <h2 className="mt-3 font-medium">{step.title}</h2>
               <p className="mt-1 text-sm text-muted-foreground">{step.description}</p>
+              {"action" in step && step.action}
             </Card>
           </li>
         ))}
@@ -65,6 +81,7 @@ export function HomePage() {
           </Link>
         </div>
       </Card>
+      <SetupDialog open={setupOpen} onClose={() => setSetupOpen(false)} />
     </div>
   );
 }

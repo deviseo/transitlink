@@ -1,11 +1,13 @@
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CircleCheck, Download, LoaderCircle, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { InfoRow } from "../components/ui/info-row";
 import { languages } from "../i18n";
-import { getAppInfo } from "../lib/api";
+import { checkUpdate, getAppInfo, installUpdate } from "../lib/api";
+import { errorText } from "../lib/errors";
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
@@ -37,7 +39,46 @@ export function SettingsPage() {
           <InfoRow label={t("settings.platform")} value={info?.platform} />
           <InfoRow label={t("settings.dataDir")} value={info?.dataDir} mono />
         </dl>
+        <UpdateCheck />
       </Card>
+    </div>
+  );
+}
+
+/** 手动检查更新；有新版本时可以直接更新并重启。 */
+function UpdateCheck() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const check = useMutation({
+    mutationFn: checkUpdate,
+    // 让顶部的更新提示也显示出来。
+    onSuccess: (update) => queryClient.setQueryData(["update"], update),
+  });
+  const install = useMutation({ mutationFn: installUpdate });
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-4 text-sm">
+      <Button variant="secondary" size="sm" onClick={() => check.mutate()} disabled={check.isPending || install.isPending}>
+        {check.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
+        {check.isPending ? t("update.checking") : t("update.check")}
+      </Button>
+      {check.isSuccess && check.data === null && (
+        <span className="flex items-center gap-1.5 text-success">
+          <CircleCheck className="h-4 w-4" aria-hidden />
+          {t("update.upToDate")}
+        </span>
+      )}
+      {check.data && (
+        <>
+          <span>{t("update.found", { version: check.data.version })}</span>
+          <Button size="sm" onClick={() => install.mutate()} disabled={install.isPending}>
+            {install.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
+            {install.isPending ? t("update.installing") : t("update.install")}
+          </Button>
+        </>
+      )}
+      {check.isError && <span className="text-danger">{errorText(t, check.error)}</span>}
+      {install.isError && <span className="text-danger">{errorText(t, install.error)}</span>}
     </div>
   );
 }

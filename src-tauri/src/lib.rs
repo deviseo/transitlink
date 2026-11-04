@@ -5,7 +5,9 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod accounts;
+mod clock;
 mod commands;
+mod configure;
 mod paths;
 mod secrets;
 mod sites;
@@ -30,6 +32,8 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }));
+        // 自动更新：安装包和 latest.json 都在 GitHub Releases，签名用 tauri.conf.json 里的公钥校验。
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     let accounts = accounts::Accounts::new(
@@ -38,8 +42,16 @@ pub fn run() {
         Box::new(secrets::KeychainStore),
     );
 
+    let configurator = configure::Configurator::new(
+        sites::http::Http::new(),
+        paths::home_dir(),
+        paths::app_data_dir(),
+        Box::new(|key| std::env::var(key).ok()),
+    );
+
     builder
         .manage(accounts)
+        .manage(configurator)
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -69,6 +81,14 @@ pub fn run() {
             commands::copy_site_key,
             commands::site_groups,
             commands::create_site_key,
+            commands::setup_plan,
+            commands::apply_tool,
+            commands::test_tool,
+            commands::tool_models,
+            commands::set_tool_model,
+            commands::restore_tool,
+            commands::check_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TransitLink");

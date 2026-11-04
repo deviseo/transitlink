@@ -2,6 +2,8 @@ name: Release
 
 # 推送 v* 标签或手动运行时，构建 macOS（Apple 芯片和 Intel 通用）和 Windows 安装包，
 # 上传到同名的 GitHub Release 草稿；在 GitHub 上检查后点「发布」，用户就能下载。
+# 同时用更新签名密钥给更新包签名，并生成 latest.json：已安装的应用从
+# releases/latest/download/latest.json 发现新版本（只认已发布的正式版，草稿不算）。
 on:
   push:
     tags: ["v*"]
@@ -43,6 +45,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: TransitLink v__VERSION__
@@ -51,4 +55,5 @@ jobs:
             首次打开的说明见 README 的「下载安装」。
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}

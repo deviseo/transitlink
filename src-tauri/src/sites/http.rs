@@ -1,4 +1,5 @@
 //! 访问站点用的 HTTP 客户端：统一超时、User-Agent，把网络错误和限流转成 [`SiteError`]。
+//! 和浏览器一样跟随系统的代理设置（以及 HTTP_PROXY 等环境变量）；测试里不走代理，结果和机器无关。
 
 use std::time::Duration;
 
@@ -21,13 +22,14 @@ pub struct JsonResponse {
 
 impl Http {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             // 固定 User-Agent：sub2api 可以把会话绑定到 User-Agent，变了会被要求重新登录。
             .user_agent(concat!("TransitLink/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(25))
-            .build()
-            .expect("HTTP client");
+            .timeout(Duration::from_secs(25));
+        #[cfg(test)]
+        let builder = builder.no_proxy();
+        let client = builder.build().expect("HTTP client");
         Self { client }
     }
 
