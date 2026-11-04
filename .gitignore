@@ -25,3 +25,8 @@ dist-ssr
 
 # 开发文档（方案、调研）只保存在本地，不提交
 docs/
+
+# tsc -b 生成的文件
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

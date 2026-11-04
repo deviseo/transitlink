@@ -4,7 +4,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 export const inDesktop = isTauri();
 
 /** 调用 Rust 命令；在浏览器预览时用 preview 提供的示例数据。 */
-export async function call<T>(command: string, preview: () => T, args?: Record<string, unknown>): Promise<T> {
+export async function call<T>(command: string, preview: () => T | Promise<T>, args?: Record<string, unknown>): Promise<T> {
   if (!inDesktop) return preview();
   return invoke<T>(command, args);
 }

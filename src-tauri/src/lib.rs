@@ -1,8 +1,15 @@
 //! TransitLink 桌面端核心：中转站账号、Key 与本机编程工具配置都在 Rust 侧处理，
 //! 凭证和网络请求不经过网页层。
 
+// 单元测试的二进制不会调用 run()，只从它可达的命令在测试构建里会被误报为未使用。
+#![cfg_attr(test, allow(dead_code))]
+
+mod accounts;
 mod commands;
 mod paths;
+mod secrets;
+mod sites;
+mod store;
 mod tools;
 
 #[cfg(desktop)]
@@ -25,8 +32,16 @@ pub fn run() {
         }));
     }
 
+    let accounts = accounts::Accounts::new(
+        sites::http::Http::new(),
+        store::SiteStore::new(paths::app_data_dir().join("sites.json")),
+        Box::new(secrets::KeychainStore),
+    );
+
     builder
+        .manage(accounts)
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             // Windows / Linux 的开发版和免安装版需要在运行时注册 transitlink:// 协议；
@@ -42,7 +57,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
-            commands::detect_tools
+            commands::detect_tools,
+            commands::detect_site,
+            commands::login_site,
+            commands::submit_login_code,
+            commands::cancel_login,
+            commands::list_sites,
+            commands::remove_site,
+            commands::site_account,
+            commands::site_keys,
+            commands::copy_site_key,
+            commands::site_groups,
+            commands::create_site_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TransitLink");

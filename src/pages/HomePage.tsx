@@ -1,20 +1,23 @@
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, KeyRound, Link2, Sparkles, Terminal } from "lucide-react";
+import { ArrowRight, Check, KeyRound, Link2, Sparkles, Terminal } from "lucide-react";
 import { buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
-import { detectTools } from "../lib/api";
+import { detectTools, listSites } from "../lib/api";
 
 export function HomePage() {
   const { t } = useTranslation();
   const { data: tools } = useQuery({ queryKey: ["tools"], queryFn: detectTools });
+  const { data: sites } = useQuery({ queryKey: ["sites"], queryFn: listSites });
   const installed = (tools ?? []).filter((tool) => tool.installed).map((tool) => t(`tools.${tool.kind}`));
+  // 接入站点时就完成了登录，所以有站点即前两步完成。
+  const connected = (sites ?? []).length > 0;
 
   const steps = [
-    { title: t("home.step1"), description: t("home.step1Desc"), icon: Link2 },
-    { title: t("home.step2"), description: t("home.step2Desc"), icon: KeyRound },
-    { title: t("home.step3"), description: t("home.step3Desc"), icon: Sparkles },
+    { title: t("home.step1"), description: t("home.step1Desc"), icon: Link2, done: connected },
+    { title: t("home.step2"), description: t("home.step2Desc"), icon: KeyRound, done: connected },
+    { title: t("home.step3"), description: t("home.step3Desc"), icon: Sparkles, done: false },
   ];
 
   return (
@@ -29,7 +32,13 @@ export function HomePage() {
           <li key={step.title}>
             <Card className="h-full">
               <div className="flex items-center gap-2">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand/10 text-sm font-semibold text-brand">{index + 1}</span>
+                {step.done ? (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-success text-white" aria-label={t("home.done")}>
+                    <Check className="h-4 w-4" aria-hidden />
+                  </span>
+                ) : (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand/10 text-sm font-semibold text-brand">{index + 1}</span>
+                )}
                 <step.icon className="h-4 w-4 text-muted-foreground" aria-hidden />
               </div>
               <h2 className="mt-3 font-medium">{step.title}</h2>
@@ -51,7 +60,7 @@ export function HomePage() {
             {t("home.goTools")}
           </Link>
           <Link to="/sites" className={buttonVariants({ size: "sm" })}>
-            {t("home.goSites")}
+            {connected ? t("home.manageSites", { count: sites?.length ?? 0 }) : t("home.goSites")}
             <ArrowRight className="h-4 w-4" aria-hidden />
           </Link>
         </div>
