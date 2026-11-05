@@ -39,9 +39,14 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-clipboard-manager = "2"
 toml_edit = "0.25.18"
 # 登录窗口里轮询登录状态用的计时器和单次通道（tauri 本身就在用 tokio）。
-tokio = { version = "1", features = ["time", "sync"] }
+tokio = { version = "1", features = ["time", "sync", "process", "io-util", "macros"] }
+# 一键安装时把系统代理交给安装命令（和 reqwest 读系统代理用的是同一套）。
+hyper-util = { version = "0.1", features = ["client-proxy-system"] }
+http = "1"
 # 判断专属链接和站点是不是同一个域名（公共后缀列表，正确处理 .com.cn、github.io 这类后缀）。
 psl = "2.1.246"
+# 改 Gemini CLI、OpenCode 允许注释的 JSON 配置时保留注释和格式。
+jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

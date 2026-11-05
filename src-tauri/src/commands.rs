@@ -7,6 +7,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use crate::accounts::{Accounts, LoginOutcome, SiteView};
 use crate::configure::probe::TestResult;
 use crate::configure::{ApplyOutcome, ConfigError, Configurator, SetupPlan, ToolOverview};
+use crate::install::{InstallOutcome, Installer};
 use crate::settings::{AppSettings, SettingsStore};
 use crate::siteconfig::{self, SiteConfig};
 use crate::sites::http::Http;
@@ -277,6 +278,26 @@ pub async fn detect_tools(
         .await
         .unwrap_or_default();
     Ok(configurator.overview(statuses))
+}
+
+/// 一键安装工具（官方安装脚本或 npm）。`mirror`：npm 用国内镜像。安装过程的输出通过
+/// `tool-install` 事件发给界面。已经在装别的工具时返回 installBusy。
+#[tauri::command]
+pub async fn install_tool(
+    app: AppHandle,
+    installer: State<'_, Installer>,
+    kind: ToolKind,
+    mirror: bool,
+) -> CommandResult<InstallOutcome> {
+    let outcome = installer
+        .install(&app, kind, mirror)
+        .await
+        .map_err(|_| CommandError {
+            code: "installBusy".to_string(),
+            message: None,
+        })?;
+    refresh_tray(&app);
+    Ok(outcome)
 }
 
 #[derive(Debug, Serialize)]

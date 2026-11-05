@@ -16,16 +16,17 @@
 - **macOS**：如果提示「无法打开」或「已损坏」，到「系统设置 → 隐私与安全性」点「仍要打开」；或者在终端运行 `xattr -dr com.apple.quarantine /Applications/TransitLink.app` 后再打开。
 - **Windows**：如果出现「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
 
-## 当前进度（第一期）
+## 当前进度
 
 - [x] 项目骨架：Tauri 2 + React + TypeScript；中英文界面；浅色、深色跟随系统
-- [x] 检测本机的 Claude Code 和 Codex：安装位置、版本、配置文件位置
+- [x] 检测本机的编程工具（Claude Code、Codex、Gemini CLI、Grok Build、OpenCode）：安装位置、版本、配置文件位置
+- [x] 一键安装工具：运行官方的安装命令（Gemini CLI 用 npm，需要 Node.js），显示安装过程；跟随系统代理，npm 可以换国内镜像；装好后终端里还找不到命令时，提示怎么加到 PATH
 - [x] 注册 `transitlink://` 专属链接协议，单实例运行
 - [x] 接入站点：输入网址后自动识别 new-api 和 sub2api，可以同时接入多个站点
 - [x] 账号密码登录 new-api（新版和旧版）和 sub2api，支持两步验证；显示余额
 - [x] 左上角切换当前站点：概览、密钥、工单都看当前站点；切换时可以选择 Claude Code、Codex 要不要一起改用这个站点；站点的接入、重新登录和删除在「管理站点」里
 - [x] 密钥：查看、新建（可选分组）、一键复制
-- [x] 一键配置 Claude Code 和 Codex：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
+- [x] 一键配置这五个工具：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
 - [x] 托盘（macOS 是菜单栏）里快速切换：配置过的工具一起切过去（应用里的当前站点也跟着换），沿用在那个站点上选过的分组和模型；关掉窗口后留在托盘里运行
 - [x] 开启了人机验证（Turnstile 等）的站点：在应用里打开站点自己的登录页登录，登录后自动接入
 - [x] 专属链接一键接入：换上站长在 TransitHub 里设置的品牌（名称、logo、主题色、欢迎语），概览页显示公告和客服，一键配置用站长推荐的分组和模型
@@ -37,10 +38,14 @@
 
 - **Claude Code**：`~/.claude/settings.json` 的 `env` 里写入站点地址（`ANTHROPIC_BASE_URL`）和 Key（`ANTHROPIC_AUTH_TOKEN`），选了模型时还有 `ANTHROPIC_MODEL`；`~/.claude.json` 里标记已完成首次引导，免得第一次启动就要求登录 Anthropic 账号。
 - **Codex**：`~/.codex/config.toml` 里加一个 `[model_providers.transitlink]`（站点地址和 Key），再把 `model_provider`、`model` 指向它。不动 `auth.json`，ChatGPT 账号登录不受影响。
+- **Gemini CLI**：`~/.gemini/.env` 里写入站点地址（`GOOGLE_GEMINI_BASE_URL`）、Key（`GEMINI_API_KEY`）和模型（`GEMINI_MODEL`）；`~/.gemini/settings.json` 里把登录方式设成 API Key。Gemini CLI 只在你信任的文件夹里读这个 `.env`，第一次在某个文件夹里运行时请选择信任。
+- **Grok Build**：`~/.grok/config.toml` 里加一个 `[model.transitlink]`（站点地址、Key 和模型），再把 `[models]` 的默认模型、会话标题和图片说明用的模型指向它；有了自己的 Key，不再要求登录 xAI 账号。
+- **OpenCode**：`~/.config/opencode/opencode.jsonc`（没有就用 `opencode.json`）里加一个 `transitlink` 服务商，列出站点上可用的模型，再把默认模型指向它。Claude 模型走 Anthropic 接口，其他模型走 OpenAI 兼容接口。
 - 会盖过上面这些设置的旧值（例如别的工具写的 `ANTHROPIC_API_KEY`、`apiKeyHelper`、`openai_base_url`）会先清掉，其他设置、注释和格式都保留。
 - 写之前先用这个 Key 测试连通，测试不通过就什么都不改。每次修改前把原文件备份到 `~/.transitlink/backups/`，第一次修改前的原文件一直保留。
 - 「还原」只把 TransitLink 改过的几项改回第一次配置之前的样子，你后来加的其他设置不受影响。
-- 用 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 换过配置目录的，按换过的目录处理。
+- 用 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`GEMINI_CLI_HOME`、`GROK_HOME`、`XDG_CONFIG_HOME` 换过配置目录的，按换过的目录处理。
+- 允许注释的配置文件（Gemini CLI 的 `settings.json`、OpenCode 的配置）也只改这几个键，注释和格式都保留。
 
 ## 站长：给用户发专属链接
 
@@ -106,7 +111,8 @@ src-tauri/               Rust 核心
   src/sites/             new-api 和 sub2api 的接口、登录密码加密
   src/store.rs           站点列表（~/.transitlink/sites.json，不含凭证）
   src/secrets.rs         凭证存取（系统钥匙串）
-  src/configure/         一键配置：Claude Code、Codex 的配置读写，备份、还原，连通测试
+  src/configure/         一键配置：Claude Code、Codex、Gemini CLI、Grok Build、OpenCode 的配置读写，备份、还原，连通测试
+  src/install.rs         一键安装：运行官方安装命令或 npm，输出发给界面，跟随系统代理
   src/tools.rs           本机编程工具检测
   src/tray.rs            托盘菜单：切换站点、打开、退出
   src/webauth.rs         开了人机验证的站点：登录窗口

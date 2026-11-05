@@ -7,12 +7,12 @@ import { Button, buttonVariants } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { applyTool, detectTools, listSites, setupPlan, type ApplyOutcome, type GroupSummary, type ToolKind } from "../../lib/api";
 import { errorText } from "../../lib/errors";
-import { testText, toolCommands } from "../../lib/tools";
+import { siteName } from "../../lib/currentSite";
+import { ALL_TOOLS, familyKey, testText, toolCommands } from "../../lib/tools";
 
 type Run = { status: "running" } | { status: "done"; outcome: ApplyOutcome } | { status: "failed"; error: unknown };
 type Phase = "choose" | "running" | "done";
 
-const ALL_TOOLS: ToolKind[] = ["claudeCode", "codex"];
 
 const selectClass =
   "h-9 min-w-0 rounded-lg border border-border bg-card px-2 text-sm text-foreground outline-none focus:border-brand focus:ring-1 focus:ring-brand disabled:opacity-50";
@@ -30,7 +30,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
   const sites = useQuery({ queryKey: ["sites"], queryFn: listSites, enabled: open });
   const tools = useQuery({ queryKey: ["tools"], queryFn: detectTools, enabled: open });
   const [siteId, setSiteId] = useState("");
-  const [chosen, setChosen] = useState<Record<ToolKind, boolean>>({ claudeCode: true, codex: true });
+  const [chosen, setChosen] = useState<Partial<Record<ToolKind, boolean>>>({});
   const [groups, setGroups] = useState<Partial<Record<ToolKind, string>>>({});
   const [runs, setRuns] = useState<Partial<Record<ToolKind, Run>>>({});
   const [phase, setPhase] = useState<Phase>("choose");
@@ -42,9 +42,13 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
     setPhase("choose");
     setRuns({});
     setGroups({});
-    setChosen({ claudeCode: !only || only === "claudeCode", codex: !only || only === "codex" });
+    // 默认勾选装好了的工具；一个都没装时勾选 Claude Code 和 Codex（配置好后装上就能用）。
+    const installed = (tools.data ?? []).filter((tool) => tool.installed).map((tool) => tool.kind);
+    const defaults: ToolKind[] = only ? [only] : installed.length > 0 ? installed : ["claudeCode", "codex"];
+    setChosen(Object.fromEntries(ALL_TOOLS.map((kind) => [kind, defaults.includes(kind)])));
     // 从托盘点了某个站点：直接选中它。
     if (initialSiteId) setSiteId(initialSiteId);
+    // tools.data 只在打开时用一次，不放进依赖：重新检测工具时不要重置用户的勾选。
   }, [open, only, initialSiteId]);
 
   // 默认站点：托盘点的那个，或者工具已经配置到的那个，否则第一个。
@@ -109,7 +113,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
             <select id="setup-site" value={siteId} onChange={(event) => { setSiteId(event.target.value); setGroups({}); }} className={`${selectClass} flex-1`}>
               {(sites.data ?? []).map((site) => (
                 <option key={site.id} value={site.id}>
-                  {site.name} · {site.account}
+                  {siteName(site)} · {site.account}
                 </option>
               ))}
             </select>
@@ -140,7 +144,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                           <input
                             id={id}
                             type="checkbox"
-                            checked={chosen[kind]}
+                            checked={chosen[kind] ?? false}
                             onChange={(event) => setChosen((current) => ({ ...current, [kind]: event.target.checked }))}
                             className="h-4 w-4 shrink-0 accent-brand"
                           />
@@ -172,7 +176,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                           <CircleAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
                           {t("setup.groupNotMatched", {
                             tool: t(`tools.${kind}`),
-                            family: t(kind === "claudeCode" ? "setup.familyClaudeCode" : "setup.familyCodex"),
+                            family: t(familyKey[kind]),
                           })}
                         </p>
                       )}
@@ -221,6 +225,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                         {t("common.separator")}
                         {testText(t, run.outcome.test)}
                       </p>
+                      {kind === "geminiCli" && <p className="mt-1 text-xs text-warning">{t("tools.geminiTrust")}</p>}
                     </>
                   )}
                   {run?.status === "failed" && <p className="text-sm text-danger">{errorText(t, run.error)}</p>}

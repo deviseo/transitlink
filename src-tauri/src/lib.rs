@@ -8,6 +8,7 @@ mod accounts;
 mod clock;
 mod commands;
 mod configure;
+mod install;
 mod paths;
 mod secrets;
 mod settings;
@@ -63,6 +64,7 @@ pub fn run() {
         .manage(settings)
         .manage(tickets)
         .manage(commands::PendingLink::default())
+        .manage(install::Installer::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -103,6 +105,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::detect_tools,
+            commands::install_tool,
             commands::detect_site,
             commands::login_site,
             commands::submit_login_code,

@@ -1,6 +1,6 @@
 import { call, inDesktop } from "./tauri";
 
-export type ToolKind = "claudeCode" | "codex";
+export type ToolKind = "claudeCode" | "codex" | "geminiCli" | "grokBuild" | "opencode";
 
 export interface ToolStatus {
   kind: ToolKind;
@@ -9,6 +9,10 @@ export interface ToolStatus {
   version: string | null;
   configPath: string;
   configExists: boolean;
+  /** 官方安装命令（一键安装旁边显示，也可以复制到终端里自己运行）。 */
+  installCommand: string;
+  /** 用 npm 安装（需要 Node.js，可以换国内镜像）。 */
+  installNpm: boolean;
 }
 
 /** 工具配置的状态：没配置、用 TransitLink 配好了、配好后被别的程序改了、用户自己配了别的服务、配置文件格式有误。 */
@@ -196,19 +200,54 @@ function previewError(code: string): never {
 export const getAppInfo = () =>
   call<AppInfo>("app_info", () => ({ name: "TransitLink", version: "0.1.0", dataDir: "~/.transitlink", platform: "browser" }));
 
+const notConfigured = { state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null } as const;
+const missing = { installed: false, binaryPath: null, version: null, configExists: false } as const;
 const previewTools: ToolOverview[] = [
-  { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.1.300", configPath: "~/.claude/settings.json", configExists: true, state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null },
-  { kind: "codex", installed: false, binaryPath: null, version: null, configPath: "~/.codex/config.toml", configExists: false, state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null },
+  { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.1.300", configPath: "~/.claude/settings.json", configExists: true, installCommand: "curl -fsSL https://claude.ai/install.sh | bash", installNpm: false, ...notConfigured },
+  { kind: "codex", ...missing, configPath: "~/.codex/config.toml", installCommand: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", installNpm: false, ...notConfigured },
+  { kind: "geminiCli", ...missing, configPath: "~/.gemini/.env", installCommand: "npm install -g @google/gemini-cli", installNpm: true, ...notConfigured },
+  { kind: "grokBuild", ...missing, configPath: "~/.grok/config.toml", installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash", installNpm: false, ...notConfigured },
+  { kind: "opencode", ...missing, configPath: "~/.config/opencode/opencode.json", installCommand: "curl -fsSL https://opencode.ai/install | bash", installNpm: false, ...notConfigured },
 ];
 const previewModels: Record<ToolKind, string[]> = {
   claudeCode: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"],
   codex: ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.5", "claude-opus-5-5"],
+  geminiCli: ["gemini-3.1-pro-preview", "gemini-3.8-flash"],
+  grokBuild: ["grok-4.7", "grok-code-fast-1"],
+  opencode: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
 };
+const previewToolNames: Record<ToolKind, string> = { claudeCode: "Claude Code", codex: "Codex", geminiCli: "Gemini CLI", grokBuild: "Grok Build", opencode: "OpenCode" };
 const previewTool = (kind: ToolKind) => previewTools.find((tool) => tool.kind === kind) as ToolOverview;
 const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 /** 检测本机的工具和它们现在的配置。 */
 export const detectTools = () => call<ToolOverview[]>("detect_tools", () => previewTools.map((tool) => ({ ...tool })));
+
+/**
+ * 一键安装的结果。失败时带上安装命令，可以让用户复制到终端里自己运行。
+ * pathHint：装好了，但终端里还找不到这个命令（要把这个目录加到 PATH）。
+ */
+export type InstallOutcome =
+  | { status: "installed"; version: string | null; binaryPath: string | null; pathHint: string | null }
+  | { status: "needsNode"; required: number; found: string | null }
+  | { status: "npmPermission"; command: string }
+  | { status: "network"; command: string }
+  | { status: "timedOut"; command: string }
+  | { status: "failed"; code: number | null; command: string };
+
+/** 安装过程中的一行输出（Rust 发来的 tool-install 事件）。 */
+export interface InstallLine {
+  kind: ToolKind;
+  line: string;
+}
+
+/** 一键安装工具（官方安装脚本或 npm）。mirror：npm 用国内镜像。预览时 2 秒后当作装好了。 */
+export const installTool = (kind: ToolKind, mirror: boolean) =>
+  call<InstallOutcome>("install_tool", async () => {
+    await pause(2000);
+    Object.assign(previewTool(kind), { installed: true, version: "1.0.0", binaryPath: `~/.local/bin/${kind}` } satisfies Partial<ToolOverview>);
+    return { status: "installed", version: "1.0.0", binaryPath: `~/.local/bin/${kind}`, pathHint: "~/.local/bin" };
+  }, { kind, mirror });
 
 export const detectSite = (url: string) =>
   call<SiteInfo>("detect_site", () => {
@@ -296,11 +335,15 @@ export const setupPlan = (siteId: string) =>
       { id: "default", name: "default", description: "默认分组", ratio: 1, platform: null },
       { id: "claude", name: "claude", description: "Claude 专用", ratio: 1.2, platform: null },
       { id: "codex", name: "codex", description: "Codex 专用", ratio: 1, platform: null },
+      { id: "gemini", name: "gemini", description: "Gemini 专用", ratio: 1, platform: null },
     ],
     balanceUsd: 12.34,
     tools: [
       { kind: "claudeCode", recommendedGroup: "claude", matched: true, recommendedModel: null },
       { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex.model || null },
+      { kind: "geminiCli", recommendedGroup: "gemini", matched: true, recommendedModel: null },
+      { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
+      { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },
     ],
   }), { siteId });
 
@@ -310,17 +353,18 @@ export const applyTool = (kind: ToolKind, siteId: string, groupId: string | null
     await pause(700);
     if (kind === "claudeCode" && groupId === "codex") previewError("noFamilyModels");
     const site = previewSites.find((item) => item.id === siteId) ?? previewSite;
-    const chosen = kind === "codex" ? (model ?? "gpt-6.1-sol") : model;
-    const keyName = kind === "codex" ? "TransitLink Codex" : "TransitLink Claude Code";
+    // Claude Code 不指定模型时用它自己的默认模型；其他工具挑第一个合适的。
+    const chosen = kind === "claudeCode" ? model : (model ?? previewModels[kind][0]);
+    const keyName = `TransitLink ${previewToolNames[kind]}`;
     Object.assign(previewTool(kind), {
       state: "configured",
       configExists: true,
       applied: { siteId, siteName: site.name, keyName, group: groupId, model: chosen, appliedAt: Math.floor(Date.now() / 1000) },
       currentBaseUrl: site.baseUrl,
       currentModel: chosen,
-      currentProvider: kind === "codex" ? "transitlink" : null,
+      currentProvider: kind === "claudeCode" || kind === "geminiCli" ? null : "transitlink",
     } satisfies Partial<ToolOverview>);
-    const family = previewModels[kind].filter((id) => (kind === "codex" ? id.startsWith("gpt-") : id.includes("claude"))).length;
+    const family = previewModels[kind].length;
     return { keyName, keyCreated: true, group: groupId, model: chosen, test: { status: "ok", models: previewModels[kind].length, family } };
   }, { kind, siteId, groupId, model });
 

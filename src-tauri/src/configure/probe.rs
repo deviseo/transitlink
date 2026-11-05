@@ -28,13 +28,119 @@ impl TestResult {
     }
 }
 
-/// 这个模型适不适合该工具。
+/// 这个模型适不适合该工具：Claude Code 要 Claude 模型，Codex 要 GPT 模型，Gemini CLI 要 Gemini 模型，
+/// Grok Build 要 Grok 模型，OpenCode 什么对话模型都能用。画图、视频、语音、向量这类模型都不算。
 pub fn fits(kind: ToolKind, id: &str) -> bool {
     let id = id.to_ascii_lowercase();
     match kind {
         ToolKind::ClaudeCode => id.contains("claude"),
         ToolKind::Codex => id.starts_with("gpt-") || id.contains("codex"),
+        ToolKind::GeminiCli => id.contains("gemini") && !special_purpose(&id),
+        ToolKind::GrokBuild => id.contains("grok") && !special_purpose(&id),
+        ToolKind::OpenCode => !special_purpose(&id),
     }
+}
+
+/// 不能拿来对话的模型。
+fn special_purpose(id: &str) -> bool {
+    const WORDS: [&str; 15] = [
+        "embed",
+        "image",
+        "imagine",
+        "video",
+        "veo",
+        "tts",
+        "audio",
+        "whisper",
+        "dall-e",
+        "moderation",
+        "rerank",
+        "transcribe",
+        "realtime",
+        "live",
+        "vision",
+    ];
+    WORDS.iter().any(|word| id.contains(word))
+}
+
+/// 模型名里的数字，用来比新旧：`gemini-3.1-pro` → `[3, 1]`，`claude-sonnet-5-5` → `[5, 5]`。
+fn numbers(id: &str) -> Vec<u32> {
+    id.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+/// 没指定模型时给工具挑一个（Claude Code 不用挑，用它自己的默认模型）：
+/// - Codex：版本最高的通用 GPT 模型；
+/// - Gemini CLI：版本最高的 pro，其次 flash（lite 最后）；
+/// - Grok Build：版本最高的通用 Grok 模型（fast、mini 往后放）；
+/// - OpenCode：有 Claude 模型就用 Claude（sonnet 优先），没有就按 Codex 的办法挑 GPT，再没有就用第一个对话模型。
+pub fn pick_model(kind: ToolKind, ids: &[String]) -> Option<String> {
+    let best = |keep: &dyn Fn(&str) -> bool, rank: &dyn Fn(&str) -> Vec<u32>| {
+        ids.iter()
+            .filter(|id| keep(&id.to_ascii_lowercase()))
+            .max_by_key(|id| {
+                let lower = id.to_ascii_lowercase();
+                (
+                    rank(&lower),
+                    numbers(&lower),
+                    std::cmp::Reverse(lower.len()),
+                    std::cmp::Reverse(lower),
+                )
+            })
+            .cloned()
+    };
+    match kind {
+        ToolKind::ClaudeCode => None,
+        ToolKind::Codex => pick_codex_model(ids),
+        ToolKind::GeminiCli => best(&|id| fits(kind, id), &|id| {
+            vec![
+                u32::from(id.contains("pro")),
+                u32::from(!id.contains("lite")),
+            ]
+        }),
+        ToolKind::GrokBuild => best(&|id| fits(kind, id), &|id| {
+            vec![u32::from(!id.contains("mini") && !id.contains("fast"))]
+        }),
+        ToolKind::OpenCode => best(&|id| id.contains("claude"), &|id| {
+            vec![
+                u32::from(id.contains("sonnet")),
+                u32::from(id.contains("opus")),
+            ]
+        })
+        .or_else(|| pick_codex_model(ids))
+        .or_else(|| ids.iter().find(|id| fits(kind, id)).cloned()),
+    }
+}
+
+/// OpenCode 一个服务商只能用一种接口：选了 Claude 模型就列 Claude 模型（Anthropic 接口），
+/// 否则列其他对话模型（OpenAI 兼容接口）。
+pub fn opencode_family(model: &str, ids: &[String]) -> Vec<String> {
+    let claude = model.to_ascii_lowercase().contains("claude");
+    ids.iter()
+        .filter(|id| {
+            let lower = id.to_ascii_lowercase();
+            !special_purpose(&lower) && lower.contains("claude") == claude
+        })
+        .cloned()
+        .collect()
+}
+
+/// OpenCode 起会话标题用的便宜模型：同一类里的 haiku、mini、flash（版本最高的）。
+pub fn opencode_small_model(family: &[String]) -> Option<String> {
+    family
+        .iter()
+        .filter(|id| {
+            let lower = id.to_ascii_lowercase();
+            lower.contains("haiku") || lower.contains("mini") || lower.contains("flash")
+        })
+        .max_by_key(|id| {
+            (
+                numbers(&id.to_ascii_lowercase()),
+                std::cmp::Reverse(id.len()),
+            )
+        })
+        .cloned()
 }
 
 /// 取模型列表。出错时返回能直接显示的测试结果。

@@ -7,6 +7,9 @@
 pub mod claude;
 pub mod codex;
 pub(crate) mod files;
+pub mod gemini;
+pub mod grok;
+pub mod opencode;
 pub mod probe;
 mod state;
 
@@ -135,6 +138,73 @@ struct Connection {
     token: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    /// 请求发到我们写的服务商（Codex、Grok Build、OpenCode 可能被用户换成别的服务商）。
+    ours: bool,
+    /// 用户自己配置了别的服务（没用 TransitLink 配置时才看）。
+    other: bool,
+}
+
+/// 按工具的写法读出现在的连接。
+fn read_connection(kind: ToolKind, text: Option<&str>) -> Result<Connection, ConfigError> {
+    Ok(match kind {
+        ToolKind::ClaudeCode => {
+            let current = claude::read(text)?;
+            Connection {
+                other: current.base_url.is_some(),
+                ours: true,
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: None,
+            }
+        }
+        ToolKind::Codex => {
+            let current = codex::read(text)?;
+            Connection {
+                ours: current.provider.as_deref() == Some(codex::PROVIDER_ID),
+                other: current.base_url.is_some() || current.provider.is_some(),
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: current.provider,
+            }
+        }
+        ToolKind::GeminiCli => {
+            let current = gemini::read(text)?;
+            Connection {
+                other: current.base_url.is_some(),
+                ours: true,
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: None,
+            }
+        }
+        ToolKind::GrokBuild => {
+            let current = grok::read(text)?;
+            Connection {
+                ours: current.default.as_deref() == Some(grok::MODEL_KEY),
+                // 默认模型可能是 Grok 自己的模型（官方账号），不算别的服务。
+                other: false,
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: current.default,
+            }
+        }
+        ToolKind::OpenCode => {
+            let current = opencode::read(text)?;
+            let ours = current.provider.as_deref() == Some(opencode::PROVIDER_ID);
+            Connection {
+                ours,
+                other: current.provider.is_some() && !ours,
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: current.provider,
+            }
+        }
+    })
 }
 
 type EnvLookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -172,21 +242,7 @@ impl Configurator {
     fn connection(&self, kind: ToolKind) -> Result<Connection, ConfigError> {
         let path = self.config_path(kind);
         let text = files::read(&path)?;
-        let connection = match kind {
-            ToolKind::ClaudeCode => claude::read(text.as_deref()).map(|current| Connection {
-                base_url: current.base_url,
-                token: current.token,
-                model: current.model,
-                provider: None,
-            }),
-            ToolKind::Codex => codex::read(text.as_deref()).map(|current| Connection {
-                base_url: current.base_url,
-                token: current.token,
-                model: current.model,
-                provider: current.provider,
-            }),
-        };
-        connection.map_err(|error| error.at(&path))
+        read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))
     }
 
     /// 给检测结果补上配置状态。
@@ -200,16 +256,16 @@ impl Configurator {
                 let state = match (&connection, &applied) {
                     (Err(_), _) => ConfigState::Invalid,
                     (Ok(current), Some(applied)) => {
-                        let ours = kind != ToolKind::Codex
-                            || current.provider.as_deref() == Some(codex::PROVIDER_ID);
-                        if ours && current.base_url.as_deref() == Some(applied.base_url.as_str()) {
+                        if current.ours
+                            && current.base_url.as_deref() == Some(applied.base_url.as_str())
+                        {
                             ConfigState::Configured
                         } else {
                             ConfigState::Changed
                         }
                     }
                     (Ok(current), None) => {
-                        if current.base_url.is_some() || current.provider.is_some() {
+                        if current.other {
                             ConfigState::Other
                         } else {
                             ConfigState::NotConfigured
@@ -283,11 +339,7 @@ impl Configurator {
         let path = self.config_path(kind);
         // 先确认配置文件能改，免得建好 Key 才发现写不进去。
         let text = files::read(&path)?;
-        match kind {
-            ToolKind::ClaudeCode => claude::read(text.as_deref()).map(|_| ()),
-            ToolKind::Codex => codex::read(text.as_deref()).map(|_| ()),
-        }
-        .map_err(|error| error.at(&path))?;
+        read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))?;
 
         let (key, key_created) = accounts
             .tool_key(site_id, kind.key_name(), group_id)
@@ -307,7 +359,7 @@ impl Configurator {
             .map(str::to_string);
         let model = match kind {
             ToolKind::ClaudeCode => offered,
-            ToolKind::Codex => Some(offered.or_else(|| probe::pick_codex_model(&ids)).ok_or(
+            _ => Some(offered.or_else(|| probe::pick_model(kind, &ids)).ok_or(
                 ConfigError::Test(TestResult::NoFamilyModels { models: ids.len() }),
             )?),
         };
@@ -349,6 +401,64 @@ impl Configurator {
                 files::write(&path, &out)?;
                 serde_json::to_value(snapshot)
             }
+            ToolKind::GeminiCli => {
+                let previous = previous.as_ref().map(|applied| {
+                    serde_json::from_value::<gemini::Snapshot>(applied.snapshot.clone())
+                        .unwrap_or_default()
+                });
+                let target = gemini::Target {
+                    base_url: &base_url,
+                    token: &key.key,
+                    model: model.as_deref().unwrap_or_default(),
+                };
+                let (out, mut snapshot) =
+                    gemini::apply(text.as_deref(), &target, previous.as_ref())
+                        .map_err(|error| error.at(&path))?;
+                // settings.json 里把登录方式设成 API Key；第一次配置时记下原来的登录方式。
+                let auth = self.set_gemini_auth(&backups, now)?;
+                if snapshot.auth.is_none() {
+                    snapshot.auth = Some(auth);
+                }
+                files::write(&path, &out)?;
+                serde_json::to_value(snapshot)
+            }
+            ToolKind::GrokBuild => {
+                let previous = previous.as_ref().map(|applied| {
+                    serde_json::from_value::<grok::Snapshot>(applied.snapshot.clone())
+                        .unwrap_or_default()
+                });
+                let target = grok::Target {
+                    site_name: &site.info.name,
+                    base_url: &base_url,
+                    token: &key.key,
+                    model: model.as_deref().unwrap_or_default(),
+                };
+                let (out, snapshot) = grok::apply(text.as_deref(), &target, previous.as_ref())
+                    .map_err(|error| error.at(&path))?;
+                files::write(&path, &out)?;
+                serde_json::to_value(snapshot)
+            }
+            ToolKind::OpenCode => {
+                let previous = previous.as_ref().map(|applied| {
+                    serde_json::from_value::<opencode::Snapshot>(applied.snapshot.clone())
+                        .unwrap_or_default()
+                });
+                let chosen = model.as_deref().unwrap_or_default();
+                let family = probe::opencode_family(chosen, &ids);
+                let small = probe::opencode_small_model(&family);
+                let target = opencode::Target {
+                    site_name: &site.info.name,
+                    base_url: &base_url,
+                    token: &key.key,
+                    model: chosen,
+                    models: &family,
+                    small_model: small.as_deref(),
+                };
+                let (out, snapshot) = opencode::apply(text.as_deref(), &target, previous.as_ref())
+                    .map_err(|error| error.at(&path))?;
+                files::write(&path, &out)?;
+                serde_json::to_value(snapshot)
+            }
         }
         .map_err(|error| ConfigError::Io(error.to_string()))?;
 
@@ -384,6 +494,39 @@ impl Configurator {
         })
     }
 
+    /// Gemini CLI 的 settings.json：登录方式设成 API Key，返回原来的登录方式（还原用）。
+    fn set_gemini_auth(
+        &self,
+        backups: &Path,
+        now: u64,
+    ) -> Result<gemini::AuthSnapshot, ConfigError> {
+        let path = tools::gemini_settings_path(&self.home, &*self.env);
+        let text = files::read(&path)?;
+        let (out, snapshot) = gemini::set_auth(text.as_deref()).map_err(|error| error.at(&path))?;
+        files::backup(&path, backups, now, true)?;
+        files::write(&path, &out)?;
+        Ok(snapshot)
+    }
+
+    /// 还原 Gemini CLI 的登录方式。
+    fn restore_gemini_auth(&self, snapshot: &gemini::AuthSnapshot) -> Result<(), ConfigError> {
+        let path = tools::gemini_settings_path(&self.home, &*self.env);
+        let text = files::read(&path)?;
+        let restored =
+            gemini::restore_auth(text.as_deref(), snapshot).map_err(|error| error.at(&path))?;
+        files::backup(
+            &path,
+            &self.backup_dir(ToolKind::GeminiCli),
+            crate::clock::now_secs(),
+            false,
+        )?;
+        match restored {
+            Some(out) => files::write(&path, &out)?,
+            None => files::remove(&path)?,
+        }
+        Ok(())
+    }
+
     /// Claude Code 第一次启动会要求登录 Anthropic 账号；标记已完成引导后直接可用。
     /// `.claude.json` 是 Claude Code 自己的状态文件，读不了或格式有误时跳过，不影响配置本身。
     fn mark_claude_onboarded(&self, backups: &Path, now: u64) {
@@ -416,6 +559,11 @@ impl Configurator {
         let ids = probe::list_models(&self.http, &base_url, &token)
             .await
             .map_err(ConfigError::Test)?;
+        if kind == ToolKind::OpenCode {
+            // 一个服务商只用一种接口：现在用的是 Claude 模型，就只能换别的 Claude 模型，反之亦然。
+            let current = connection.model.unwrap_or_default();
+            return Ok(probe::opencode_family(&current, &ids));
+        }
         Ok(probe::order_for(kind, ids))
     }
 
@@ -427,10 +575,13 @@ impl Configurator {
         let text = files::read(&path)?;
         let out = match (kind, model) {
             (ToolKind::ClaudeCode, model) => claude::set_model(text.as_deref(), model),
-            (ToolKind::Codex, Some(model)) => codex::set_model(text.as_deref(), model),
-            (ToolKind::Codex, None) => {
+            (_, None) => {
                 return Err(ConfigError::Test(TestResult::NoFamilyModels { models: 0 }));
             }
+            (ToolKind::Codex, Some(model)) => codex::set_model(text.as_deref(), model),
+            (ToolKind::GeminiCli, Some(model)) => gemini::set_model(text.as_deref(), model),
+            (ToolKind::GrokBuild, Some(model)) => grok::set_model(text.as_deref(), model),
+            (ToolKind::OpenCode, Some(model)) => opencode::set_model(text.as_deref(), model),
         }
         .map_err(|error| error.at(&path))?;
         let now = crate::clock::now_secs();
@@ -517,6 +668,24 @@ impl Configurator {
                     serde_json::from_value(applied.snapshot).unwrap_or_default();
                 codex::restore(text.as_deref(), &snapshot)
             }
+            ToolKind::GeminiCli => {
+                let snapshot: gemini::Snapshot =
+                    serde_json::from_value(applied.snapshot).unwrap_or_default();
+                if let Some(auth) = &snapshot.auth {
+                    self.restore_gemini_auth(auth)?;
+                }
+                gemini::restore(text.as_deref(), &snapshot)
+            }
+            ToolKind::GrokBuild => {
+                let snapshot: grok::Snapshot =
+                    serde_json::from_value(applied.snapshot).unwrap_or_default();
+                grok::restore(text.as_deref(), &snapshot)
+            }
+            ToolKind::OpenCode => {
+                let snapshot: opencode::Snapshot =
+                    serde_json::from_value(applied.snapshot).unwrap_or_default();
+                opencode::restore(text.as_deref(), &snapshot)
+            }
         }
         .map_err(|error| error.at(&path))?;
         files::backup(
@@ -554,6 +723,8 @@ fn operator_recommend(
     Some(match kind {
         ToolKind::ClaudeCode => &config.recommend.claude_code,
         ToolKind::Codex => &config.recommend.codex,
+        // 新工具 TransitHub 还没有推荐设置：按分组认。
+        ToolKind::GeminiCli | ToolKind::GrokBuild | ToolKind::OpenCode => return None,
     })
 }
 
@@ -576,11 +747,19 @@ fn recommend(
     {
         return (Some(group.id.clone()), true);
     }
-    if let Some(group) = groups
-        .iter()
-        .find(|group| fits_group(kind, platform, group))
-    {
-        return (Some(group.id.clone()), true);
+    // OpenCode 什么模型都能用：优先 Claude 分组，其次 GPT 分组。
+    let wanted: &[ToolKind] = if kind == ToolKind::OpenCode {
+        &[ToolKind::ClaudeCode, ToolKind::Codex]
+    } else {
+        std::slice::from_ref(&kind)
+    };
+    for candidate in wanted {
+        if let Some(group) = groups
+            .iter()
+            .find(|group| fits_group(*candidate, platform, group))
+        {
+            return (Some(group.id.clone()), true);
+        }
     }
     let fallback = user_group
         .and_then(|name| groups.iter().find(|group| group.name == name))
@@ -592,11 +771,17 @@ fn recommend(
 fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool {
     match platform {
         Platform::Sub2api => {
-            group.platform.as_deref()
-                == Some(match kind {
-                    ToolKind::ClaudeCode => "anthropic",
-                    ToolKind::Codex => "openai",
-                })
+            let wanted: &[&str] = match kind {
+                ToolKind::ClaudeCode => &["anthropic"],
+                ToolKind::Codex => &["openai"],
+                ToolKind::GeminiCli => &["gemini"],
+                ToolKind::GrokBuild => &["grok"],
+                ToolKind::OpenCode => &["anthropic", "openai"],
+            };
+            group
+                .platform
+                .as_deref()
+                .is_some_and(|platform| wanted.contains(&platform))
         }
         Platform::Newapi => {
             let text = format!("{} {}", group.name, group.description).to_lowercase();
@@ -609,6 +794,12 @@ fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool 
                 }
                 ToolKind::Codex => {
                     text.contains("codex") || text.contains("openai") || text.contains("gpt")
+                }
+                ToolKind::GeminiCli => text.contains("gemini") || text.contains("google"),
+                ToolKind::GrokBuild => text.contains("grok") || words.any(|word| word == "xai"),
+                ToolKind::OpenCode => {
+                    fits_group(ToolKind::ClaudeCode, platform, group)
+                        || fits_group(ToolKind::Codex, platform, group)
                 }
             }
         }

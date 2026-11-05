@@ -92,6 +92,8 @@ fn status(kind: ToolKind, fixture: &Fixture) -> ToolStatus {
         version: None,
         config_exists: path.is_file(),
         config_path: path.display().to_string(),
+        install_command: String::new(),
+        install_npm: false,
     }
 }
 
@@ -563,5 +565,225 @@ async fn switches_configured_tools_between_sites() {
         std::fs::read_to_string(&config)
             .unwrap()
             .contains(&format!("base_url = \"{}/v1\"", a.uri()))
+    );
+}
+
+/// 新加的三个工具：各自的分组、专用 Key 和模型。
+async fn mount_more_tools(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/v1/groups/available"))
+        .respond_with(ok(json!([
+            { "id": 1, "name": "Claude", "platform": "anthropic", "rate_multiplier": 1 },
+            { "id": 2, "name": "Codex", "platform": "openai", "rate_multiplier": 1 },
+            { "id": 3, "name": "Gemini", "platform": "gemini", "rate_multiplier": 1 },
+            { "id": 4, "name": "Grok", "platform": "grok", "rate_multiplier": 1 }
+        ])))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/auth/me"))
+        .respond_with(ok(json!({ "email": "a@example.com", "balance": 5 })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/keys"))
+        .respond_with(ok(json!({ "items": [] })))
+        .mount(server)
+        .await;
+    for (name, group, key, ids) in [
+        (
+            "TransitLink Gemini CLI",
+            3,
+            "sk-gemini",
+            vec!["gemini-3.8-flash", "gemini-3.1-pro-preview", "imagen-4"],
+        ),
+        (
+            "TransitLink Grok Build",
+            4,
+            "sk-grok",
+            vec!["grok-code-fast-1", "grok-4.7", "grok-imagine-1"],
+        ),
+        (
+            "TransitLink OpenCode",
+            1,
+            "sk-opencode",
+            vec!["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/api/v1/keys"))
+            .and(body_partial_json(json!({ "name": name, "group_id": group })))
+            .respond_with(ok(json!(
+                { "id": group * 10, "name": name, "key": key, "group_id": group, "status": "active" }
+            )))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("Authorization", format!("Bearer {key}").as_str()))
+            .respond_with(models(&ids))
+            .mount(server)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn configures_and_restores_gemini_grok_and_opencode() {
+    let server = MockServer::start().await;
+    mount_more_tools(&server).await;
+    let fixture = fixture(&server, "more-tools");
+    let apply = |kind: ToolKind, group: &'static str| {
+        fixture
+            .configurator
+            .apply(&fixture.accounts, kind, &fixture.site_id, Some(group), None)
+    };
+
+    // Gemini CLI：.env 写地址、Key、模型；settings.json 改登录方式，注释和原来的登录方式都保留。
+    let gemini_dir = fixture.home.join(".gemini");
+    std::fs::create_dir_all(&gemini_dir).unwrap();
+    let settings_before = "{\n  // 我的 Gemini 设置\n  \"security\": { \"auth\": { \"selectedType\": \"oauth-personal\" } }\n}\n";
+    std::fs::write(gemini_dir.join("settings.json"), settings_before).unwrap();
+    let outcome = apply(ToolKind::GeminiCli, "3").await.unwrap();
+    assert_eq!(outcome.model.as_deref(), Some("gemini-3.1-pro-preview"));
+    let env = std::fs::read_to_string(gemini_dir.join(".env")).unwrap();
+    assert!(env.contains(&format!("GOOGLE_GEMINI_BASE_URL={}", server.uri())));
+    assert!(env.contains("GEMINI_API_KEY=sk-gemini"));
+    let settings = std::fs::read_to_string(gemini_dir.join("settings.json")).unwrap();
+    assert!(settings.contains("// 我的 Gemini 设置"));
+    assert!(settings.contains("\"gemini-api-key\""));
+    assert_eq!(
+        overview(ToolKind::GeminiCli, &fixture).state,
+        ConfigState::Configured
+    );
+    fixture
+        .configurator
+        .restore(ToolKind::GeminiCli)
+        .await
+        .unwrap();
+    assert!(!gemini_dir.join(".env").exists());
+    assert_eq!(
+        std::fs::read_to_string(gemini_dir.join("settings.json")).unwrap(),
+        settings_before
+    );
+
+    // Grok Build：config.toml 里我们的模型表，默认模型指向它；可以换模型；原来没有文件，还原就删掉。
+    let outcome = apply(ToolKind::GrokBuild, "4").await.unwrap();
+    assert_eq!(outcome.model.as_deref(), Some("grok-4.7"));
+    let grok = fixture.home.join(".grok/config.toml");
+    let text = std::fs::read_to_string(&grok).unwrap();
+    assert!(text.contains("api_key = \"sk-grok\""));
+    assert!(text.contains(&format!("base_url = \"{}/v1\"", server.uri())));
+    assert_eq!(
+        overview(ToolKind::GrokBuild, &fixture).state,
+        ConfigState::Configured
+    );
+    fixture
+        .configurator
+        .set_model(ToolKind::GrokBuild, Some("grok-code-fast-1"))
+        .await
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&grok)
+            .unwrap()
+            .contains("model = \"grok-code-fast-1\"")
+    );
+    fixture
+        .configurator
+        .restore(ToolKind::GrokBuild)
+        .await
+        .unwrap();
+    assert!(!grok.exists());
+
+    // OpenCode：Claude 分组走 Anthropic 接口，默认用 sonnet，起标题用 haiku；换模型只列 Claude 模型。
+    let outcome = apply(ToolKind::OpenCode, "1").await.unwrap();
+    assert_eq!(outcome.model.as_deref(), Some("claude-sonnet-5-5"));
+    let opencode = fixture.home.join(".config/opencode/opencode.json");
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&opencode).unwrap()).unwrap();
+    assert_eq!(written["model"], json!("transitlink/claude-sonnet-5-5"));
+    assert_eq!(
+        written["small_model"],
+        json!("transitlink/claude-haiku-5-5")
+    );
+    assert_eq!(
+        written["provider"]["transitlink"]["npm"],
+        json!("@ai-sdk/anthropic")
+    );
+    assert_eq!(
+        written["provider"]["transitlink"]["options"]["apiKey"],
+        json!("sk-opencode")
+    );
+    assert_eq!(
+        written["provider"]["transitlink"]["models"]
+            .as_object()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        overview(ToolKind::OpenCode, &fixture).state,
+        ConfigState::Configured
+    );
+    let choices = fixture
+        .configurator
+        .models(ToolKind::OpenCode)
+        .await
+        .unwrap();
+    assert!(choices.iter().all(|id| id.contains("claude")));
+    fixture
+        .configurator
+        .restore(ToolKind::OpenCode)
+        .await
+        .unwrap();
+    assert!(!opencode.exists());
+}
+
+#[test]
+fn recommends_groups_for_the_new_tools() {
+    let group = |id: &str, name: &str, platform: Option<&str>| GroupSummary {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        ratio: None,
+        platform: platform.map(str::to_string),
+    };
+    let sub2api = vec![
+        group("2", "Codex", Some("openai")),
+        group("1", "Claude", Some("anthropic")),
+        group("3", "Gemini", Some("gemini")),
+        group("4", "Grok", Some("grok")),
+    ];
+    let pick =
+        |kind, groups: &[GroupSummary], platform| recommend(kind, platform, groups, None, None);
+    assert_eq!(
+        pick(ToolKind::GeminiCli, &sub2api, Platform::Sub2api),
+        (Some("3".into()), true)
+    );
+    assert_eq!(
+        pick(ToolKind::GrokBuild, &sub2api, Platform::Sub2api),
+        (Some("4".into()), true)
+    );
+    // OpenCode 优先 Claude 分组（即使 GPT 分组排在前面）。
+    assert_eq!(
+        pick(ToolKind::OpenCode, &sub2api, Platform::Sub2api),
+        (Some("1".into()), true)
+    );
+
+    let newapi = vec![
+        group("default", "default", None),
+        group("g", "Google Gemini", None),
+        group("x", "xAI 专线", None),
+    ];
+    assert_eq!(
+        pick(ToolKind::GeminiCli, &newapi, Platform::Newapi),
+        (Some("g".into()), true)
+    );
+    assert_eq!(
+        pick(ToolKind::GrokBuild, &newapi, Platform::Newapi),
+        (Some("x".into()), true)
+    );
+    assert_eq!(
+        pick(ToolKind::OpenCode, &newapi, Platform::Newapi),
+        (Some("default".into()), false)
     );
 }

@@ -1,4 +1,5 @@
-//! 本机编程工具的检测（第一期：Claude Code、Codex）。写入配置在 `configure` 模块。
+//! 本机编程工具的检测：Claude Code、Codex、Gemini CLI、Grok Build、OpenCode。写入配置在 `configure`
+//! 模块，一键安装在 `install` 模块。
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -13,15 +14,28 @@ use serde::{Deserialize, Serialize};
 pub enum ToolKind {
     ClaudeCode,
     Codex,
+    GeminiCli,
+    GrokBuild,
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 2] = [ToolKind::ClaudeCode, ToolKind::Codex];
+    pub const ALL: [ToolKind; 5] = [
+        ToolKind::ClaudeCode,
+        ToolKind::Codex,
+        ToolKind::GeminiCli,
+        ToolKind::GrokBuild,
+        ToolKind::OpenCode,
+    ];
 
     fn binary(self) -> &'static str {
         match self {
             ToolKind::ClaudeCode => "claude",
             ToolKind::Codex => "codex",
+            ToolKind::GeminiCli => "gemini",
+            ToolKind::GrokBuild => "grok",
+            ToolKind::OpenCode => "opencode",
         }
     }
 
@@ -30,6 +44,9 @@ impl ToolKind {
         match self {
             ToolKind::ClaudeCode => "claudeCode",
             ToolKind::Codex => "codex",
+            ToolKind::GeminiCli => "geminiCli",
+            ToolKind::GrokBuild => "grokBuild",
+            ToolKind::OpenCode => "opencode",
         }
     }
 
@@ -38,6 +55,9 @@ impl ToolKind {
         match self {
             ToolKind::ClaudeCode => "claude-code",
             ToolKind::Codex => "codex",
+            ToolKind::GeminiCli => "gemini-cli",
+            ToolKind::GrokBuild => "grok-build",
+            ToolKind::OpenCode => "opencode",
         }
     }
 
@@ -46,22 +66,53 @@ impl ToolKind {
         match self {
             ToolKind::ClaudeCode => "TransitLink Claude Code",
             ToolKind::Codex => "TransitLink Codex",
+            ToolKind::GeminiCli => "TransitLink Gemini CLI",
+            ToolKind::GrokBuild => "TransitLink Grok Build",
+            ToolKind::OpenCode => "TransitLink OpenCode",
         }
     }
 
-    /// 配置文件位置：Claude Code 支持用 `CLAUDE_CONFIG_DIR` 改目录，Codex 支持 `CODEX_HOME`。
+    /// 配置文件位置（都支持用环境变量换目录）：
+    /// - Claude Code：`CLAUDE_CONFIG_DIR` 或 `~/.claude`，`settings.json`；
+    /// - Codex：`CODEX_HOME` 或 `~/.codex`，`config.toml`；
+    /// - Gemini CLI：`GEMINI_CLI_HOME`（代替主目录）或主目录下的 `.gemini/.env`；
+    /// - Grok Build：`GROK_HOME` 或 `~/.grok`，`config.toml`；
+    /// - OpenCode：`XDG_CONFIG_HOME` 或 `~/.config` 下的 `opencode/`，已有 `opencode.jsonc` 就用它
+    ///   （OpenCode 第一次运行会建这个文件，而且它优先），否则 `opencode.json`。
     pub fn config_path(self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
-        let (variable, default_dir, file) = match self {
-            ToolKind::ClaudeCode => ("CLAUDE_CONFIG_DIR", ".claude", "settings.json"),
-            ToolKind::Codex => ("CODEX_HOME", ".codex", "config.toml"),
+        let dir = |variable: &str, default: PathBuf| {
+            env(variable)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(default)
         };
-        env(variable)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(default_dir))
-            .join(file)
+        match self {
+            ToolKind::ClaudeCode => {
+                dir("CLAUDE_CONFIG_DIR", home.join(".claude")).join("settings.json")
+            }
+            ToolKind::Codex => dir("CODEX_HOME", home.join(".codex")).join("config.toml"),
+            ToolKind::GeminiCli => dir("GEMINI_CLI_HOME", home.to_path_buf())
+                .join(".gemini")
+                .join(".env"),
+            ToolKind::GrokBuild => dir("GROK_HOME", home.join(".grok")).join("config.toml"),
+            ToolKind::OpenCode => {
+                let base = dir("XDG_CONFIG_HOME", home.join(".config")).join("opencode");
+                let jsonc = base.join("opencode.jsonc");
+                if jsonc.is_file() {
+                    jsonc
+                } else {
+                    base.join("opencode.json")
+                }
+            }
+        }
     }
+}
+
+/// Gemini CLI 的 `settings.json`（和 `.env` 在同一个目录）：一键配置时把登录方式设成 API Key。
+pub fn gemini_settings_path(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    let env_file = ToolKind::GeminiCli.config_path(home, env);
+    env_file.parent().unwrap_or(home).join("settings.json")
 }
 
 /// Claude Code 的用户状态文件 `.claude.json`（记录是否完成首次引导等）：默认在主目录下；
@@ -85,6 +136,10 @@ pub struct ToolStatus {
     pub version: Option<String>,
     pub config_path: String,
     pub config_exists: bool,
+    /// 官方安装命令（界面上一键安装旁边显示，也可以复制到终端里自己运行）。
+    pub install_command: String,
+    /// 用 npm 安装（需要 Node.js，可以换国内镜像）。
+    pub install_npm: bool,
 }
 
 /// 检测所有支持的工具。
@@ -96,6 +151,89 @@ pub fn detect_all() -> Vec<ToolStatus> {
         .iter()
         .map(|kind| detect(*kind, &home, &env, &search))
         .collect()
+}
+
+/// 检测一个工具（装完以后重新检测用）。
+pub fn detect_one(kind: ToolKind) -> ToolStatus {
+    let home = crate::paths::home_dir();
+    let env = |key: &str| std::env::var(key).ok();
+    let search = search_path(&home, std::env::var_os("PATH"));
+    detect(kind, &home, &env, &search)
+}
+
+/// 用户在终端里能不能直接运行这个目录里的命令：看登录 shell 的 PATH（Windows 看用户和系统的
+/// Path 环境变量）。读不到时当作能，免得误报。
+pub fn on_shell_path(home: &Path, dir: &Path) -> bool {
+    let _ = home;
+    match shell_path() {
+        Some(path) => std::env::split_paths(&path).any(|entry| entry == dir),
+        None => true,
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_path() -> Option<OsString> {
+    // 从桌面启动的应用可能没有 SHELL：macOS 默认 zsh。
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "/bin/zsh".into()
+        } else {
+            "/bin/bash".into()
+        }
+    });
+    let mut command = Command::new(shell);
+    // -i -l：和打开一个新终端一样读 .zshrc / .bash_profile。
+    command.args(["-ilc", "printf '__TL_PATH__%s' \"$PATH\""]);
+    let output = run_quietly(command, Duration::from_secs(5))?;
+    let text = String::from_utf8_lossy(&output);
+    let (_, path) = text.rsplit_once("__TL_PATH__")?;
+    Some(OsString::from(path.trim()))
+}
+
+#[cfg(windows)]
+fn shell_path() -> Option<OsString> {
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')",
+    ]);
+    let output = run_quietly(command, Duration::from_secs(10))?;
+    Some(OsString::from(String::from_utf8_lossy(&output).trim()))
+}
+
+/// 运行命令，最多等 `limit`，返回标准输出。
+fn run_quietly(mut command: Command, limit: Duration) -> Option<Vec<u8>> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = stdout.read_to_end(&mut output);
+        output
+    });
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    reader.join().ok()
 }
 
 fn detect(
@@ -116,6 +254,11 @@ fn detect(
         version,
         config_exists: config.is_file(),
         config_path: config.display().to_string(),
+        install_command: crate::install::display_command(crate::install::method(kind), false),
+        install_npm: matches!(
+            crate::install::method(kind),
+            crate::install::Method::Npm { .. }
+        ),
     }
 }
 
@@ -128,6 +271,9 @@ pub fn search_path(home: &Path, inherited: Option<OsString>) -> OsString {
     let mut extra = vec![
         home.join(".local/bin"),
         home.join(".claude/local"),
+        // Grok Build、OpenCode 官方安装脚本的位置。
+        home.join(".grok/bin"),
+        home.join(".opencode/bin"),
         home.join(".npm-global/bin"),
         home.join(".volta/bin"),
         home.join(".bun/bin"),
@@ -247,6 +393,40 @@ mod tests {
         assert_eq!(
             ToolKind::Codex.config_path(home, &none),
             home.join(".codex/config.toml")
+        );
+        assert_eq!(
+            ToolKind::GeminiCli.config_path(home, &none),
+            home.join(".gemini/.env")
+        );
+        assert_eq!(
+            gemini_settings_path(home, &none),
+            home.join(".gemini/settings.json")
+        );
+        assert_eq!(
+            ToolKind::GrokBuild.config_path(home, &none),
+            home.join(".grok/config.toml")
+        );
+        assert_eq!(
+            ToolKind::OpenCode.config_path(home, &none),
+            home.join(".config/opencode/opencode.json")
+        );
+        let moved = |key: &str| match key {
+            "GEMINI_CLI_HOME" => Some("/data/g".to_string()),
+            "GROK_HOME" => Some("/data/grok".to_string()),
+            "XDG_CONFIG_HOME" => Some("/data/xdg".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            ToolKind::GeminiCli.config_path(home, &moved),
+            PathBuf::from("/data/g/.gemini/.env")
+        );
+        assert_eq!(
+            ToolKind::GrokBuild.config_path(home, &moved),
+            PathBuf::from("/data/grok/config.toml")
+        );
+        assert_eq!(
+            ToolKind::OpenCode.config_path(home, &moved),
+            PathBuf::from("/data/xdg/opencode/opencode.json")
         );
 
         let custom = |key: &str| match key {

@@ -2,13 +2,19 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, CircleCheck, LoaderCircle, Sparkles } from "lucide-react";
+import { ArrowRight, CircleCheck, Download, LoaderCircle, Sparkles } from "lucide-react";
 import { SetupDialog } from "../tools/SetupDialog";
 import { Button, buttonVariants } from "../ui/button";
 import { Card } from "../ui/card";
 import { detectTools, switchTools, type SiteView, type ToolKind, type ToolOverview } from "../../lib/api";
 import { siteName, useCurrentSite } from "../../lib/currentSite";
 import { errorText } from "../../lib/errors";
+
+/** 概览只列装了或配置过的工具；一个都没有时列 Claude Code 和 Codex（其他的在工具页）。 */
+function shown(tools: ToolOverview[]): ToolOverview[] {
+  const used = tools.filter((tool) => tool.installed || tool.applied);
+  return used.length > 0 ? used : tools.filter((tool) => tool.kind === "claudeCode" || tool.kind === "codex");
+}
 
 /**
  * 概览里的编程工具：每个工具和当前站点的关系。没配置的可以一键配置；用的是别的站点时，可以改用当前站点
@@ -29,7 +35,7 @@ export function ToolsSummary({ site }: { site: SiteView }) {
       </div>
       {tools.isLoading && <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden />}
       <ul className="divide-y divide-border">
-        {(tools.data ?? []).map((tool) => (
+        {shown(tools.data ?? []).map((tool) => (
           <ToolRow key={tool.kind} tool={tool} site={site} onSetup={() => setSetup(tool.kind)} />
         ))}
       </ul>
@@ -66,10 +72,19 @@ function ToolRow({ tool, site, onSetup }: { tool: ToolOverview; site: SiteView; 
         {t("overview.useHere")}
       </Button>
     );
-  } else if (tool.state === "notConfigured") {
-    status = tool.installed ? t("overview.notConfigured") : t("overview.notInstalled");
+  } else if (!tool.installed && tool.state === "notConfigured") {
+    // 一键安装在工具页（能看到安装过程）。
+    status = t("overview.notInstalled");
     action = (
-      <Button variant={tool.installed ? "primary" : "secondary"} size="sm" onClick={onSetup}>
+      <Link to="/tools" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+        <Download className="h-4 w-4" aria-hidden />
+        {t("tools.install.button")}
+      </Link>
+    );
+  } else if (tool.state === "notConfigured") {
+    status = t("overview.notConfigured");
+    action = (
+      <Button size="sm" onClick={onSetup}>
         <Sparkles className="h-4 w-4" aria-hidden />
         {t("tools.configure")}
       </Button>
