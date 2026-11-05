@@ -82,6 +82,10 @@ pub struct PendingLink(pub std::sync::Mutex<Option<String>>);
 pub struct SiteLink {
     config_url: String,
     config: SiteConfig,
+    /// 专属链接的地址（不带协议），和站点不是同一个域名时在接入窗口里给用户看。
+    link_host: String,
+    /// 专属链接和站点是不是同一个域名（同一个站长）。不是的话接入窗口里提醒用户确认链接是站长发的。
+    same_owner: bool,
 }
 
 /// 读取专属链接（或者直接是配置地址）指向的站长配置。
@@ -89,10 +93,23 @@ pub struct SiteLink {
 pub async fn load_site_link(link: String) -> CommandResult<SiteLink> {
     let config_url = siteconfig::config_url_from(&link).ok_or(SiteError::LinkInvalid)?;
     let config = siteconfig::fetch(&Http::new(), &config_url).await?;
-    Ok(SiteLink { config_url, config })
+    let link_host = crate::tickets::hub_host(&config_url)
+        .or_else(|| {
+            url::Url::parse(&config_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_string))
+        })
+        .unwrap_or_default();
+    let same_owner = crate::tickets::same_owner(&config.site.base_url, &config_url);
+    Ok(SiteLink {
+        config_url,
+        config,
+        link_host,
+        same_owner,
+    })
 }
 
-/// 用专属链接接入后，记下站长配置（品牌、推荐、公告、客服）。
+/// 用户在接入窗口里接受了专属链接：记下站长配置（品牌、推荐、公告、客服），也算确认了链接里的工单服务。
 #[tauri::command]
 pub async fn attach_site_link(
     app: AppHandle,
@@ -101,7 +118,7 @@ pub async fn attach_site_link(
     config_url: String,
 ) -> CommandResult<SiteView> {
     let config = siteconfig::fetch(&Http::new(), &config_url).await?;
-    let view = accounts.attach_config(&id, &config_url, config)?;
+    let view = accounts.accept_link(&id, &config_url, config)?;
     refresh_tray(&app);
     Ok(view)
 }

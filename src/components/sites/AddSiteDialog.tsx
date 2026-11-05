@@ -26,7 +26,7 @@ import {
   type SiteLink,
   type SiteView,
 } from "../../lib/api";
-import { settingsKey } from "../../lib/currentSite";
+import { settingsKey, urlHost } from "../../lib/currentSite";
 import { errorText } from "../../lib/errors";
 
 type Step =
@@ -224,6 +224,12 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
         <div className="space-y-4">
           <BrandHeader link={link} />
           {link.config.brand.welcome && <p className="text-sm text-muted-foreground">{link.config.brand.welcome}</p>}
+          {!link.sameOwner && (
+            <p role="alert" className="flex gap-2 rounded-lg bg-warning/10 p-3 text-sm text-warning">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>{t("sites.add.linkElsewhere", { link: link.linkHost, site: urlHost(link.config.site.baseUrl) })}</span>
+            </p>
+          )}
           {existing.length > 0 ? (
             <p className="rounded-lg bg-brand/10 p-3 text-sm">
               {t("sites.add.linkExisting", { accounts: existing.map((site) => site.account).join(t("common.separator")) })}

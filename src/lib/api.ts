@@ -98,6 +98,10 @@ export interface SiteConfig {
 export interface SiteLink {
   configUrl: string;
   config: SiteConfig;
+  /** 专属链接的地址（不带协议）。 */
+  linkHost: string;
+  /** 专属链接和站点是同一个域名（同一个站长）。不是的话，接入窗口里提醒用户确认链接是站长发的。 */
+  sameOwner: boolean;
 }
 
 export interface SiteView {
@@ -410,14 +414,17 @@ export const loadSiteLink = (link: string) =>
   call<SiteLink>("load_site_link", async () => {
     await pause(500);
     if (!link.startsWith("transitlink://") && !link.includes("/api/client/v1/sites/")) previewError("linkInvalid");
-    return { configUrl: "https://hub.example.com/api/client/v1/sites/abcdefghij", config: previewConfig };
+    // 预览：链接里带 other 的当作和站点不是同一个域名的链接。
+    const host = link.includes("other") ? "hub.other-example.net" : "hub.example.com";
+    return { configUrl: `https://${host}/api/client/v1/sites/abcdefghij`, config: previewConfig, linkHost: host, sameOwner: !link.includes("other") };
   }, { link });
 
 /** 用专属链接接入后，记下站长配置。 */
 export const attachSiteLink = (id: string, configUrl: string) =>
   call<SiteView>("attach_site_link", () => {
     const index = previewSites.findIndex((item) => item.id === id);
-    const site = { ...(previewSites[index] ?? previewSite), config: previewConfig, ticketsHost: "hub.example.com" };
+    // 接受了专属链接就算确认了里面的工单服务。
+    const site = { ...(previewSites[index] ?? previewSite), config: previewConfig, ticketsHost: new URL(configUrl).host, ticketsAllowed: true };
     if (index >= 0) previewSites[index] = site;
     return { ...site };
   }, { id, configUrl });

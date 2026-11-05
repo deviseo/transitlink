@@ -485,6 +485,21 @@ impl Accounts {
     }
 
     /// 用户确认专属链接里的 TransitHub 是站长的：记下它的地址，以后打开工单时才把站点的登录交给它核实身份。
+    /// 用户在接入窗口里接受了专属链接：记下站长配置，也记下用户确认过链接里的工单服务
+    /// （和站点不是同一个域名的链接，接入窗口里已经提醒过）。后台定时更新配置用 [`Self::attach_config`]，不算确认。
+    pub fn accept_link(
+        &self,
+        id: &str,
+        config_url: &str,
+        config: SiteConfig,
+    ) -> Result<SiteView, SiteError> {
+        self.attach_config(id, config_url, config)?;
+        let mut record = self.site(id)?;
+        record.ticket_hub = crate::tickets::hub_base(config_url);
+        self.store.upsert(record.clone()).map_err(storage)?;
+        Ok(SiteView::from(&record))
+    }
+
     pub fn allow_ticket_hub(&self, id: &str) -> Result<SiteView, SiteError> {
         let mut record = self.site(id)?;
         let hub = record

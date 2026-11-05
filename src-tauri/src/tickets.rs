@@ -213,15 +213,36 @@ pub fn hub_host(config_url: &str) -> Option<String> {
     hub_base(config_url).map(|base| hub_display(&base))
 }
 
-/// 用户是否已经同意把这个站点的登录交给专属链接里的 TransitHub（链接换了地址就要重新同意）。
-pub fn hub_allowed(record: &SiteRecord) -> bool {
-    match (
-        record.config_url.as_deref().and_then(hub_base),
-        record.ticket_hub.as_deref(),
-    ) {
-        (Some(hub), Some(allowed)) => hub == allowed,
+/// 两个网址是不是同一个站长的：主机相同（IP 地址只认完全相同），或者属于同一个可注册域名
+/// （按公共后缀列表：api.example.com 和 hub.example.com 算；a.github.io 和 b.github.io 不算）。
+/// 同一个域名只有站长能控制，所以这时工单服务不用用户确认。
+pub fn same_owner(site_url: &str, other_url: &str) -> bool {
+    let (Ok(site), Ok(other)) = (url::Url::parse(site_url), url::Url::parse(other_url)) else {
+        return false;
+    };
+    match (site.host(), other.host()) {
+        (Some(url::Host::Domain(a)), Some(url::Host::Domain(b))) => {
+            let (a, b) = (a.trim_end_matches('.'), b.trim_end_matches('.'));
+            a.eq_ignore_ascii_case(b)
+                || matches!((registrable(a), registrable(b)), (Some(x), Some(y)) if x == y)
+        }
+        (Some(a), Some(b)) => a == b,
         _ => false,
     }
+}
+
+/// 主机名的可注册域名（例如 api.example.com.cn → example.com.cn）。
+fn registrable(host: &str) -> Option<String> {
+    psl::domain_str(&host.to_ascii_lowercase()).map(str::to_string)
+}
+
+/// 能不能用站点的登录换工单会话：专属链接里的工单服务和站点是同一个域名，或者用户确认过这个工单服务
+/// （打开不同域名的专属链接时在接入窗口里确认，老版本接入的站点在工单页确认）。链接换了地址要重新确认。
+pub fn hub_allowed(record: &SiteRecord) -> bool {
+    let Some(hub) = record.config_url.as_deref().and_then(hub_base) else {
+        return false;
+    };
+    same_owner(&record.info.base_url, &hub) || record.ticket_hub.as_deref() == Some(hub.as_str())
 }
 
 /// 给用户看的 TransitHub 地址（去掉协议）。
@@ -699,8 +720,8 @@ impl Tickets {
         let record = accounts.site(site_id)?;
         let config_url = record.config_url.clone().ok_or(TicketError::NotLinked)?;
         let hub = Hub::parse(&config_url).ok_or(TicketError::NotLinked)?;
-        // 没经过用户同意的 TransitHub 拿不到站点的登录（专属链接可能不是站长发的）。
-        if record.ticket_hub.as_deref() != Some(hub.base.as_str()) {
+        // 和站点不是同一个域名、用户也没确认过的工单服务，拿不到站点的登录（专属链接可能不是站长发的）。
+        if !hub_allowed(&record) {
             return Err(TicketError::ConsentRequired(hub_display(&hub.base)));
         }
         if let Some(session) = self.cached(site_id, &config_url, stale) {
@@ -853,24 +874,34 @@ mod tests {
     /// 最小的 PNG 文件头（够判断格式）。
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
 
-    /// 一个用专属链接接入、用户已经同意用工单的站点：站点本身和 TransitHub 用同一个模拟服务器。
+    /// 一个用专属链接接入的站点：站点本身和 TransitHub 用同一个模拟服务器（同一个主机，工单自动放行）。
     fn linked_site(
         server: &MockServer,
         name: &str,
         platform: Platform,
         credential: Credential,
     ) -> (Accounts, String, std::path::PathBuf) {
-        let (accounts, site, dir) = linked_site_without_consent(server, name, platform, credential);
-        accounts.allow_ticket_hub(&site).unwrap();
-        (accounts, site, dir)
+        link_site(server, name, platform, credential, &server.uri())
     }
 
-    /// 刚用专属链接接入、还没同意用工单的站点。
-    fn linked_site_without_consent(
+    /// 工单服务和站点不是同一个域名的站点：站点记成 localhost，TransitHub 还在 127.0.0.1，要用户确认。
+    fn linked_elsewhere(
         server: &MockServer,
         name: &str,
         platform: Platform,
         credential: Credential,
+    ) -> (Accounts, String, std::path::PathBuf) {
+        let site_url = server.uri().replace("127.0.0.1", "localhost");
+        link_site(server, name, platform, credential, &site_url)
+    }
+
+    /// 像后台更新配置那样记下专属链接（不算用户确认）。
+    fn link_site(
+        server: &MockServer,
+        name: &str,
+        platform: Platform,
+        credential: Credential,
+        site_url: &str,
     ) -> (Accounts, String, std::path::PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("transitlink-tickets-{name}-{}", std::process::id()));
@@ -881,7 +912,7 @@ mod tests {
         );
         let info = SiteInfo {
             platform,
-            base_url: server.uri(),
+            base_url: site_url.to_string(),
             name: "Relay".into(),
             logo_url: None,
             captcha_required: false,
@@ -895,7 +926,7 @@ mod tests {
         let config = SiteConfig {
             site: ConfigSite {
                 name: "Relay".into(),
-                base_url: server.uri(),
+                base_url: site_url.to_string(),
                 platform: if platform == Platform::Sub2api {
                     "sub2api".into()
                 } else {
@@ -1577,9 +1608,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn site_logins_stay_home_until_the_user_allows_the_hub() {
+    async fn site_logins_stay_home_until_the_user_allows_a_hub_on_another_domain() {
         let server = MockServer::start().await;
-        let (accounts, site, dir) = linked_site_without_consent(
+        let (accounts, site, dir) = linked_elsewhere(
             &server,
             "consent",
             Platform::Newapi,
@@ -1694,6 +1725,109 @@ mod tests {
             .mount(&server)
             .await;
         assert!(tickets.list(&accounts, &site).await.is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hubs_on_the_site_domain_belong_to_the_same_owner() {
+        assert!(same_owner(
+            "https://api.example.com",
+            "https://hub.example.com/transithub"
+        ));
+        assert!(same_owner("https://example.com", "https://hub.example.com"));
+        assert!(same_owner(
+            "https://API.example.com",
+            "https://hub.Example.com"
+        ));
+        assert!(same_owner(
+            "https://api.example.com.cn",
+            "https://hub.example.com.cn"
+        ));
+        assert!(same_owner("http://1.2.3.4:3000", "http://1.2.3.4:8080"));
+        assert!(same_owner("http://localhost:3000", "http://localhost:5555"));
+        assert!(!same_owner(
+            "https://api.example.com",
+            "https://hub.other.com"
+        ));
+        assert!(!same_owner(
+            "https://a.example.com.cn",
+            "https://b.other.com.cn"
+        ));
+        // 共享托管的域名：同一个后缀下的不同用户不是同一个站长。
+        assert!(!same_owner(
+            "https://relay.github.io",
+            "https://evil.github.io"
+        ));
+        assert!(!same_owner("http://1.2.3.4", "http://1.2.3.5"));
+        assert!(!same_owner(
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ));
+        assert!(!same_owner("https://api.example.com", "not a url"));
+    }
+
+    #[tokio::test]
+    async fn hubs_on_the_site_domain_are_trusted_without_asking() {
+        let server = MockServer::start().await;
+        let (accounts, site, dir) = linked_site(
+            &server,
+            "same-owner",
+            Platform::Newapi,
+            Credential::NewapiToken {
+                token: "nap_secret".into(),
+            },
+        );
+        assert!(SiteView::from(&accounts.site(&site).unwrap()).tickets_allowed);
+        Mock::given(method("POST"))
+            .and(path(session_path()))
+            .respond_with(session_ok("sess-1"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/client/v1/tickets"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "items": [], "unread": 0 })),
+            )
+            .mount(&server)
+            .await;
+        let tickets = Tickets::new(Http::new());
+        assert_eq!(tickets.list(&accounts, &site).await.unwrap().unread, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn accepting_a_link_counts_as_consent_but_refreshing_it_does_not() {
+        let server = MockServer::start().await;
+        let (accounts, site, dir) = linked_elsewhere(
+            &server,
+            "accept",
+            Platform::Newapi,
+            Credential::NewapiToken {
+                token: "nap_secret".into(),
+            },
+        );
+        let record = accounts.site(&site).unwrap();
+        let config_url = record.config_url.clone().unwrap();
+        let config = record.config.clone().unwrap();
+        assert!(!SiteView::from(&record).tickets_allowed);
+
+        // 后台定时更新配置：不算确认。
+        accounts
+            .attach_config(&site, &config_url, config.clone())
+            .unwrap();
+        assert!(!SiteView::from(&accounts.site(&site).unwrap()).tickets_allowed);
+
+        // 用户在接入窗口里接受了这个链接（不同域名时窗口里提醒过）：算确认。
+        assert!(
+            accounts
+                .accept_link(&site, &config_url, config.clone())
+                .unwrap()
+                .tickets_allowed
+        );
+        // 之后后台更新同一个链接，确认还在。
+        accounts.attach_config(&site, &config_url, config).unwrap();
+        assert!(SiteView::from(&accounts.site(&site).unwrap()).tickets_allowed);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

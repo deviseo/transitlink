@@ -40,6 +40,8 @@ tauri-plugin-clipboard-manager = "2"
 toml_edit = "0.25.18"
 # 登录窗口里轮询登录状态用的计时器和单次通道（tauri 本身就在用 tokio）。
 tokio = { version = "1", features = ["time", "sync"] }
+# 判断专属链接和站点是不是同一个域名（公共后缀列表，正确处理 .com.cn、github.io 这类后缀）。
+psl = "2.1.246"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

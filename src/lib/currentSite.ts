@@ -27,10 +27,13 @@ export function siteName(site: SiteView): string {
 }
 
 /** 网址里的主机名（显示用）。 */
-export function siteHost(site: SiteView): string {
+export function urlHost(url: string): string {
   try {
-    return new URL(site.baseUrl).host;
+    return new URL(url).host;
   } catch {
-    return site.baseUrl;
+    return url;
   }
 }
+
+/** 站点网址的主机名（显示用）。 */
+export const siteHost = (site: SiteView) => urlHost(site.baseUrl);
