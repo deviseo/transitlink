@@ -361,9 +361,11 @@ export const installUpdate = () => call<null>("install_update", () => null);
 export interface AppSettings {
   closeToTray: boolean;
   language: string;
+  /** 界面上的当前站点（没选过时没有，界面自己挑一个，见 useCurrentSite）。 */
+  currentSite?: string | null;
 }
 
-/** 托盘切换站点的结果（Rust 发来的 tray-switched 事件）。 */
+/** 切换站点的结果：应用里切换（switchTools）和托盘切换（tray-switched 事件）都用它。 */
 export interface SwitchReport {
   siteId: string;
   switched: ToolKind[];
@@ -384,6 +386,25 @@ export const setCloseToTray = (enabled: boolean) =>
 /** 告诉桌面端界面语言，托盘菜单用同一种语言。 */
 export const setLanguage = (language: string) => call<null>("set_language", () => null, { language });
 
+/** 记下界面上的当前站点（null：不指定）。只是换个站点看，不动 Claude Code / Codex 的配置。 */
+export const setCurrentSite = (siteId: string | null) =>
+  call<AppSettings>("set_current_site", () => {
+    previewSettings.currentSite = siteId;
+    return { ...previewSettings };
+  }, { siteId });
+
+/** 把这些工具切到这个站点（沿用在那个站点上选过的分组和模型）。 */
+export const switchTools = (siteId: string, kinds: ToolKind[]) =>
+  call<SwitchReport>("switch_tools", async () => {
+    await pause(600);
+    const site = previewSites.find((item) => item.id === siteId) ?? previewSite;
+    for (const kind of kinds) {
+      const tool = previewTool(kind);
+      if (tool.applied) tool.applied = { ...tool.applied, siteId, siteName: site.name };
+    }
+    return { siteId, switched: kinds, failures: [] };
+  }, { siteId, kinds });
+
 /** 读取专属链接（或配置地址）指向的站长配置。预览时任何以 transitlink:// 开头的链接都返回示例配置。 */
 export const loadSiteLink = (link: string) =>
   call<SiteLink>("load_site_link", async () => {
@@ -396,7 +417,7 @@ export const loadSiteLink = (link: string) =>
 export const attachSiteLink = (id: string, configUrl: string) =>
   call<SiteView>("attach_site_link", () => {
     const index = previewSites.findIndex((item) => item.id === id);
-    const site = { ...(previewSites[index] ?? previewSite), config: previewConfig };
+    const site = { ...(previewSites[index] ?? previewSite), config: previewConfig, ticketsHost: "hub.example.com" };
     if (index >= 0) previewSites[index] = site;
     return { ...site };
   }, { id, configUrl });
@@ -576,8 +597,6 @@ const previewTickets: TicketDetail[] = [
   },
 ];
 
-/** 预览时用的站点：还没接入开了工单的站点时，工单页用它显示示例工单。 */
-export const previewTicketSite: SiteView = { ...previewSite, config: previewConfig, ticketsHost: "hub.example.com", ticketsAllowed: true };
 
 function previewSummary(ticket: TicketDetail): TicketSummary {
   const { id, title, category, status, contact, unread, lastMessageAt, createdAt } = ticket;
@@ -601,7 +620,13 @@ function previewAttachments(images: ImageUpload[]): TicketAttachment[] {
 }
 
 /** 同意把这个站点的登录交给专属链接里的 TransitHub 核实身份（用工单前问一次，链接换了地址要重新同意）。 */
-export const allowTickets = (siteId: string) => call<SiteView>("ticket_allow", () => ({ ...previewTicketSite, ticketsAllowed: true }), { siteId });
+export const allowTickets = (siteId: string) =>
+  call<SiteView>("ticket_allow", () => {
+    const site = previewSites.find((item) => item.id === siteId);
+    if (!site) previewError("sessionExpired");
+    site.ticketsAllowed = true;
+    return { ...site };
+  }, { siteId });
 
 /** 工单会话：问题分类、图片限制和站点上的用户。第一次调用时桌面端用站点的登录换一个工单会话。 */
 export const ticketSession = (siteId: string) => call<TicketSession>("ticket_session", () => structuredClone(previewTicketSession), { siteId });
@@ -677,3 +702,19 @@ export const ticketAttachment = (siteId: string, attachmentId: string) =>
 
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;
+
+/**
+ * 浏览器预览：网址带 `?demo`（例如 `http://localhost:1420/?demo#/`）时预先放两个站点，方便看多站点的界面：
+ * 一个用专属链接接入、开了工单、Claude Code 在用；一个用网址接入。桌面端不受影响。
+ */
+if (!inDesktop && new URLSearchParams(window.location.search).has("demo")) {
+  previewSites.push(
+    { ...previewSite, account: "demo@example.com", addedAt: 2, config: previewConfig, ticketsHost: "hub.example.com", ticketsAllowed: true },
+    { id: "preview-2", name: "另一个中转站", baseUrl: "https://api.example.org", logoUrl: null, platform: "sub2api", account: "me@example.org", addedAt: 1, config: null, ticketsHost: null, ticketsAllowed: false },
+  );
+  previewSettings.currentSite = "preview";
+  Object.assign(previewTool("claudeCode"), {
+    state: "configured",
+    applied: { siteId: "preview", siteName: previewSite.name, keyName: "TransitLink Claude Code", group: "claude", model: "claude-sonnet-5-5", appliedAt: 0 },
+  } satisfies Partial<ToolOverview>);
+}

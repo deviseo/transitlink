@@ -44,7 +44,7 @@ export function SiteNotice({ brand }: { brand: ActiveBrand }) {
             <ul className="mt-2 flex flex-wrap gap-2">
               {tickets && (
                 <li>
-                  <Link to={`/tickets?site=${encodeURIComponent(brand.site.id)}`} className={buttonVariants({ size: "sm" })}>
+                  <Link to="/tickets" className={buttonVariants({ size: "sm" })}>
                     <LifeBuoy className="h-4 w-4" aria-hidden />
                     {t("home.openTicket")}
                   </Link>

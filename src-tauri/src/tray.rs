@@ -1,37 +1,20 @@
 //! 系统托盘（macOS 是菜单栏）：列出接入的站点，点一下就把已经用 TransitLink 配置过的工具
-//! 都切到这个站点。关掉主窗口后应用留在托盘里，可以从托盘重新打开或退出。
+//! 都切到这个站点（应用里的当前站点也跟着换）。关掉主窗口后应用留在托盘里，可以从托盘重新打开或退出。
 
 use std::collections::BTreeSet;
 
-use serde::Serialize;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::accounts::Accounts;
-use crate::commands::CommandError;
+use crate::commands::switch_tools_to;
 use crate::configure::Configurator;
 use crate::settings::SettingsStore;
 use crate::tools::ToolKind;
 
 const TRAY_ID: &str = "main";
 const SITE_PREFIX: &str = "site:";
-
-/// 托盘切换站点的结果，发给前端显示。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SwitchReport {
-    pub site_id: String,
-    pub switched: Vec<ToolKind>,
-    pub failures: Vec<SwitchFailure>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SwitchFailure {
-    pub kind: ToolKind,
-    pub error: CommandError,
-}
 
 struct Labels {
     header: &'static str,
@@ -43,14 +26,14 @@ struct Labels {
 fn labels(language: &str) -> Labels {
     if language.starts_with("zh") {
         Labels {
-            header: "切换站点",
+            header: "Claude Code / Codex 切换到",
             no_sites: "还没有接入站点",
             open: "打开 TransitLink",
             quit: "退出",
         }
     } else {
         Labels {
-            header: "Switch site",
+            header: "Switch Claude Code / Codex to",
             no_sites: "No sites yet",
             open: "Open TransitLink",
             quit: "Quit",
@@ -202,10 +185,14 @@ fn handle_menu(app: &AppHandle, id: &str) {
     }
 }
 
-/// 把配置过的工具都切到这个站点。还没配置过任何工具时，打开窗口让用户先一键配置。
+/// 把配置过的工具都切到这个站点，应用里的当前站点也换成它。还没配置过任何工具时，
+/// 打开窗口让用户先一键配置。
 async fn switch_site(app: AppHandle, site_id: String) {
     let configurator = app.state::<Configurator>();
     let accounts = app.state::<Accounts>();
+    let _ = app
+        .state::<SettingsStore>()
+        .update(|settings| settings.current_site = Some(site_id.clone()));
     let kinds: Vec<ToolKind> = configurator
         .configured()
         .into_iter()
@@ -218,20 +205,7 @@ async fn switch_site(app: AppHandle, site_id: String) {
         return;
     }
 
-    let mut report = SwitchReport {
-        site_id: site_id.clone(),
-        switched: Vec::new(),
-        failures: Vec::new(),
-    };
-    for kind in kinds {
-        match configurator.switch(&accounts, kind, &site_id).await {
-            Ok(_) => report.switched.push(kind),
-            Err(error) => report.failures.push(SwitchFailure {
-                kind,
-                error: error.into(),
-            }),
-        }
-    }
+    let report = switch_tools_to(&configurator, &accounts, &site_id, &kinds).await;
     refresh(&app);
     let _ = app.emit("tray-switched", &report);
     if !report.failures.is_empty() {

@@ -3,17 +3,22 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, Link2, Plus } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
+import { useSiteSwitch } from "../components/layout/SiteSwitch";
 import { AddSiteDialog } from "../components/sites/AddSiteDialog";
 import { SiteCard } from "../components/sites/SiteCard";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { listSites, removeSite, type SiteView } from "../lib/api";
+import { settingsKey, useCurrentSite } from "../lib/currentSite";
 
+/** 管理站点：接入、重新登录、删除；切换当前站点（也可以用左上角的站点名称切换）。 */
 export function SitesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const sites = useQuery({ queryKey: ["sites"], queryFn: listSites });
+  const { site: current } = useCurrentSite();
+  const { switchTo } = useSiteSwitch();
   const [dialog, setDialog] = useState<{ url: string; account: string } | null>(null);
   // 用专属链接接入后，接着打开一键配置。
   const [setupSite, setSetupSite] = useState<string | null>(null);
@@ -29,6 +34,8 @@ export function SitesPage() {
   const onRemove = async (site: SiteView) => {
     await removeSite(site.id);
     refresh();
+    // 删的是当前站点时，桌面端清掉了设置，界面换回自动挑选。
+    void queryClient.invalidateQueries({ queryKey: settingsKey });
   };
 
   const addButton = (
@@ -63,7 +70,14 @@ export function SitesPage() {
 
       <div className="space-y-4">
         {(sites.data ?? []).map((site) => (
-          <SiteCard key={site.id} site={site} onRelogin={(item) => setDialog({ url: item.baseUrl, account: item.account })} onRemove={(item) => void onRemove(item)} />
+          <SiteCard
+            key={site.id}
+            site={site}
+            current={site.id === current?.id}
+            onSwitch={switchTo}
+            onRelogin={(item) => setDialog({ url: item.baseUrl, account: item.account })}
+            onRemove={(item) => void onRemove(item)}
+          />
         ))}
       </div>
 

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CircleCheck, Headset, LoaderCircle, Lock, Plus, Send, UserRound } from "lucide-react";
 import { AttachmentThumb, ImageStrip, ImageViewer, useImageAttachments, type ViewedImage } from "../components/tickets/images";
 import { NewTicketDialog } from "../components/tickets/NewTicketDialog";
-import { CharCount, StatusBadge, TicketConsent, TicketProblem, siteLabel } from "../components/tickets/parts";
+import { CharCount, StatusBadge, TicketConsent, TicketProblem } from "../components/tickets/parts";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Field, Textarea } from "../components/ui/input";
@@ -53,7 +53,7 @@ export function TicketDetailPage() {
   });
 
   const back = (
-    <Link to={`/tickets?site=${encodeURIComponent(siteId)}`} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+    <Link to="/tickets" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
       <ArrowLeft className="h-4 w-4" aria-hidden />
       {t("tickets.back")}
     </Link>
@@ -97,7 +97,6 @@ export function TicketDetailPage() {
                   ticket.category,
                   t("tickets.createdAt", { time: messageTime(ticket.createdAt, i18n.language) }),
                   ticket.contact && t("tickets.contactShown", { contact: ticket.contact }),
-                  sites.length > 1 && siteLabel(site),
                 ]
                   .filter(Boolean)
                   .join(" · ")}

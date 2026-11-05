@@ -6,6 +6,7 @@ import { CircleCheck, CircleX } from "lucide-react";
 import { SetupDialog } from "../tools/SetupDialog";
 import { Button } from "../ui/button";
 import { listSites, type SwitchReport } from "../../lib/api";
+import { settingsKey } from "../../lib/currentSite";
 import { errorText } from "../../lib/errors";
 import { inDesktop } from "../../lib/tauri";
 
@@ -20,11 +21,16 @@ export function TrayEvents() {
   useEffect(() => {
     if (!inDesktop) return;
     const stops = [
+      // 托盘切换会把应用里的当前站点也换成那个站点。
       listen<SwitchReport>("tray-switched", (event) => {
         setReport(event.payload);
         void queryClient.invalidateQueries({ queryKey: ["tools"] });
+        void queryClient.invalidateQueries({ queryKey: settingsKey });
       }),
-      listen<string>("tray-setup", (event) => setSetupSite(event.payload)),
+      listen<string>("tray-setup", (event) => {
+        setSetupSite(event.payload);
+        void queryClient.invalidateQueries({ queryKey: settingsKey });
+      }),
     ];
     return () => {
       for (const stop of stops) void stop.then((unlisten) => unlisten());

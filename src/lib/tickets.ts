@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { queryOptions, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isPreview, listSites, listTickets, previewTicketSite, type ImageUpload, type SiteView, type TicketDetail, type TicketList, type TicketSummary } from "./api";
-import { useActiveBrand } from "./useActiveBrand";
+import { listSites, listTickets, type ImageUpload, type SiteView, type TicketDetail, type TicketList, type TicketSummary } from "./api";
 
 /** 工单列表（未读数）和正在看的工单多久刷新一次。 */
 const REFRESH_MS = 5 * 60 * 1000;
@@ -23,19 +22,20 @@ export const ticketListQuery = (siteId: string) =>
 export const ticketDetailOptions = { refetchInterval: REFRESH_MS, staleTime: STALE_MS };
 
 /**
- * 开了工单的站点（站长配置里打开了 tickets），当前品牌的站点排在最前，其余按接入时间从新到旧。
- * 每个站点的工单是分开的（各自的站长和客服），所以接入的站点里有一个开了工单，就显示工单页。
- * 浏览器预览时还没有这样的站点，用示例站点，方便看界面。`loaded`：站点列表读完了。
+ * 开了工单的站点（站长配置里打开了 tickets）。每个站点的工单是分开的（各自的站长和客服）：
+ * 工单页只看当前站点的，左上角的切换器显示其他站点有没有新回复。`loaded`：站点列表读完了。
  */
 export function useTicketSites(): { sites: SiteView[]; loaded: boolean } {
   const query = useQuery({ queryKey: ["sites"], queryFn: listSites });
-  const brand = useActiveBrand();
-  const loaded = query.data !== undefined;
-  const enabled = (query.data ?? []).filter((site) => site.config?.tickets?.enabled);
-  if (enabled.length === 0) return { sites: isPreview && loaded ? [previewTicketSite] : [], loaded };
-  const activeId = brand.site?.id;
-  const sites = [...enabled].sort((a, b) => Number(b.id === activeId) - Number(a.id === activeId) || b.addedAt - a.addedAt);
-  return { sites, loaded };
+  const sites = (query.data ?? []).filter((site) => site.config?.tickets?.enabled);
+  return { sites, loaded: query.data !== undefined };
+}
+
+/** 各站点有新回复的工单数（只算用户同意过、读过列表的站点）。 */
+export function useTicketUnread(): Map<string, number> {
+  const { sites } = useTicketSites();
+  const lists = useTicketLists(sites);
+  return new Map(sites.map((site, index) => [site.id, lists[index]?.data?.unread ?? 0]));
 }
 
 /**

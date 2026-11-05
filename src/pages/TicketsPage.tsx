@@ -1,26 +1,25 @@
 import { useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, LifeBuoy, LoaderCircle, MessagesSquare, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { NewTicketDialog } from "../components/tickets/NewTicketDialog";
-import { StatusBadge, TicketConsent, TicketProblem, siteLabel } from "../components/tickets/parts";
+import { StatusBadge, TicketConsent, TicketProblem } from "../components/tickets/parts";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import type { TicketDetail, TicketList } from "../lib/api";
 import { cn } from "../lib/cn";
-import { relativeTime, syncList, ticketKeys, ticketListQuery, useTicketLists, useTicketSites } from "../lib/tickets";
+import { siteName, useCurrentSite } from "../lib/currentSite";
+import { relativeTime, syncList, ticketKeys, ticketListQuery } from "../lib/tickets";
 
-/** 工单列表：每个开了工单的站点各自一份，可以切换站点；有新回复的工单前面有红点。 */
+/** 工单列表：当前站点的工单（换站点用左上角的切换器）；有新回复的工单前面有红点。 */
 export function TicketsPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [params, setParams] = useSearchParams();
-  const { sites, loaded } = useTicketSites();
-  const lists = useTicketLists(sites);
-  const site = sites.find((item) => item.id === params.get("site")) ?? sites[0];
+  const { site: current, loaded } = useCurrentSite();
+  const site = current?.config?.tickets?.enabled ? current : undefined;
   const allowed = site?.ticketsAllowed === true;
   const list = useQuery({ ...ticketListQuery(site?.id ?? ""), enabled: allowed });
   const [creating, setCreating] = useState(false);
@@ -34,15 +33,16 @@ export function TicketsPage() {
   };
 
   if (loaded && !site) {
+    // 当前站点没开工单（导航里本来不显示工单，从别处跳过来时说明一下）。
     return (
       <div className="space-y-6">
         <PageHeader title={t("tickets.title")} subtitle={t("tickets.subtitle")} />
         <Card className="flex flex-col items-center px-8 py-12 text-center">
           <LifeBuoy className="h-10 w-10 text-muted-foreground" aria-hidden />
-          <h2 className="mt-4 text-lg font-medium">{t("tickets.noSitesTitle")}</h2>
+          <h2 className="mt-4 text-lg font-medium">{current ? t("tickets.notEnabledTitle", { site: siteName(current) }) : t("tickets.noSitesTitle")}</h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">{t("tickets.noSitesDesc")}</p>
           <Link to="/sites" className={cn(buttonVariants(), "mt-6")}>
-            {t("tickets.goSites")}
+            {current ? t("switcher.manage") : t("tickets.goSites")}
           </Link>
         </Card>
       </div>
@@ -69,29 +69,6 @@ export function TicketsPage() {
           )
         }
       />
-
-      {site && sites.length > 1 && (
-        <div className="flex items-center gap-3">
-          <label htmlFor="ticket-site" className="shrink-0 text-sm font-medium">
-            {t("tickets.site")}
-          </label>
-          <select
-            id="ticket-site"
-            value={site.id}
-            onChange={(event) => setParams({ site: event.target.value }, { replace: true })}
-            className="h-9 min-w-0 max-w-sm flex-1 rounded-lg border border-border bg-card px-2 text-sm text-foreground outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-          >
-            {sites.map((item, index) => {
-              const unread = lists[index]?.data?.unread ?? 0;
-              return (
-                <option key={item.id} value={item.id}>
-                  {unread > 0 ? `${siteLabel(item)} · ${t("tickets.unreadCount", { count: unread })}` : siteLabel(item)}
-                </option>
-              );
-            })}
-          </select>
-        </div>
-      )}
 
       {site && !allowed && <TicketConsent site={site} />}
       {(!loaded || list.isLoading) && <LoaderCircle className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden />}

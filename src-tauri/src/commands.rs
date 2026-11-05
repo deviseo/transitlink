@@ -138,6 +138,76 @@ fn settings_error(error: std::io::Error) -> CommandError {
     ConfigError::Io(error.to_string()).into()
 }
 
+/// 记下界面上的当前站点（`None`：不指定，界面按工具在用的站点或最近接入的站点显示）。
+#[tauri::command]
+pub fn set_current_site(
+    settings: State<'_, SettingsStore>,
+    accounts: State<'_, Accounts>,
+    site_id: Option<String>,
+) -> CommandResult<AppSettings> {
+    if let Some(id) = &site_id {
+        accounts.site(id)?;
+    }
+    settings
+        .update(|settings| settings.current_site = site_id)
+        .map_err(settings_error)
+}
+
+/// 切换站点的结果：哪些工具切过去了，哪些没切成功（应用里切换和托盘切换共用）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchReport {
+    pub site_id: String,
+    pub switched: Vec<ToolKind>,
+    pub failures: Vec<SwitchFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchFailure {
+    pub kind: ToolKind,
+    pub error: CommandError,
+}
+
+/// 把这些工具一个一个切到这个站点（沿用在那个站点上选过的分组和模型）。
+pub async fn switch_tools_to(
+    configurator: &Configurator,
+    accounts: &Accounts,
+    site_id: &str,
+    kinds: &[ToolKind],
+) -> SwitchReport {
+    let mut report = SwitchReport {
+        site_id: site_id.to_string(),
+        switched: Vec::new(),
+        failures: Vec::new(),
+    };
+    for &kind in kinds {
+        match configurator.switch(accounts, kind, site_id).await {
+            Ok(_) => report.switched.push(kind),
+            Err(error) => report.failures.push(SwitchFailure {
+                kind,
+                error: error.into(),
+            }),
+        }
+    }
+    report
+}
+
+/// 应用里切换站点时，把用户勾选的工具也切过去。
+#[tauri::command]
+pub async fn switch_tools(
+    app: AppHandle,
+    configurator: State<'_, Configurator>,
+    accounts: State<'_, Accounts>,
+    site_id: String,
+    kinds: Vec<ToolKind>,
+) -> CommandResult<SwitchReport> {
+    accounts.site(&site_id)?;
+    let report = switch_tools_to(&configurator, &accounts, &site_id, &kinds).await;
+    refresh_tray(&app);
+    Ok(report)
+}
+
 /// 应用设置（关掉窗口后是否留在托盘等）。
 #[tauri::command]
 pub fn app_settings(settings: State<'_, SettingsStore>) -> AppSettings {
@@ -426,16 +496,22 @@ pub fn list_sites(accounts: State<'_, Accounts>) -> CommandResult<Vec<SiteView>>
     Ok(accounts.sites()?)
 }
 
-/// 删除站点：同时删掉钥匙串里的凭证和内存里的工单会话。
+/// 删除站点：同时删掉钥匙串里的凭证和内存里的工单会话；删的是当前站点时，界面换回自动挑选。
 #[tauri::command]
 pub fn remove_site(
     app: AppHandle,
     accounts: State<'_, Accounts>,
     tickets: State<'_, Tickets>,
+    settings: State<'_, SettingsStore>,
     id: String,
 ) -> CommandResult<()> {
     accounts.remove(&id)?;
     tickets.forget(&id);
+    let _ = settings.update(|settings| {
+        if settings.current_site.as_deref() == Some(id.as_str()) {
+            settings.current_site = None;
+        }
+    });
     refresh_tray(&app);
     Ok(())
 }

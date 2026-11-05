@@ -8,7 +8,7 @@ import { Input } from "../ui/input";
 import { copySiteKey, createSiteKey, siteGroups, siteKeys, type KeySummary } from "../../lib/api";
 import { errorText } from "../../lib/errors";
 
-/** 某个站点的 Key 列表和新建 Key。列表里的 Key 都是打码的，复制时由桌面端取完整 Key 写进剪贴板。 */
+/** 某个站点的 Key 列表和新建 Key（密钥页）。列表里的 Key 都是打码的，复制时由桌面端取完整 Key 写进剪贴板。 */
 export function KeysPanel({ siteId }: { siteId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -35,13 +35,13 @@ export function KeysPanel({ siteId }: { siteId: string }) {
   };
 
   return (
-    <div className="mt-4 border-t border-border pt-4">
+    <div>
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">{t("sites.keys.title")}</h3>
+        <h2 className="text-sm font-medium">{t("keys.list")}</h2>
         {!creating && (
           <Button variant="secondary" size="sm" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" aria-hidden />
-            {t("sites.keys.create")}
+            {t("keys.create")}
           </Button>
         )}
       </div>
@@ -49,17 +49,17 @@ export function KeysPanel({ siteId }: { siteId: string }) {
       {creating && (
         <form onSubmit={onCreate} className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-muted p-3">
           <label className="min-w-40 flex-1 space-y-1 text-xs text-muted-foreground">
-            {t("sites.keys.name")}
+            {t("keys.name")}
             <Input value={name} onChange={(event) => setName(event.target.value)} required />
           </label>
           <label className="min-w-40 flex-1 space-y-1 text-xs text-muted-foreground">
-            {t("sites.keys.group")}
+            {t("keys.group")}
             <select
               value={group}
               onChange={(event) => setGroup(event.target.value)}
               className="h-9 w-full rounded-lg border border-border bg-card px-2 text-sm text-foreground outline-none focus:border-brand focus:ring-1 focus:ring-brand"
             >
-              <option value="">{t("sites.keys.defaultGroup")}</option>
+              <option value="">{t("keys.defaultGroup")}</option>
               {(groups.data ?? []).map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
@@ -75,7 +75,7 @@ export function KeysPanel({ siteId }: { siteId: string }) {
             </Button>
             <Button type="submit" size="sm" className="h-9" disabled={create.isPending || !name.trim()}>
               {create.isPending && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
-              {t("sites.keys.createSubmit")}
+              {t("keys.createSubmit")}
             </Button>
           </div>
           {create.isError && <p className="w-full text-sm text-danger">{errorText(t, create.error)}</p>}
@@ -85,7 +85,7 @@ export function KeysPanel({ siteId }: { siteId: string }) {
       {created && (
         <div className="mt-3 flex items-center gap-3 rounded-lg border border-success/30 bg-success/10 p-3 text-sm">
           <div className="min-w-0 flex-1">
-            <p className="font-medium text-success">{t("sites.keys.created")}</p>
+            <p className="font-medium text-success">{t("keys.created")}</p>
             <p className="truncate font-mono text-xs text-muted-foreground">
               {created.name} · {created.key}
             </p>
@@ -96,18 +96,18 @@ export function KeysPanel({ siteId }: { siteId: string }) {
 
       {keys.isLoading && <LoaderCircle className="mt-3 h-4 w-4 animate-spin text-muted-foreground" aria-hidden />}
       {keys.isError && <p className="mt-3 text-sm text-danger">{errorText(t, keys.error)}</p>}
-      {keys.data && keys.data.length === 0 && <p className="mt-3 text-sm text-muted-foreground">{t("sites.keys.empty")}</p>}
+      {keys.data && keys.data.length === 0 && <p className="mt-3 text-sm text-muted-foreground">{t("keys.empty")}</p>}
       {keys.data && keys.data.length > 0 && (
         <ul className="mt-3 divide-y divide-border">
           {keys.data.map((key) => (
             <li key={key.id} className="flex items-center gap-3 py-2 text-sm">
               <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
               <div className="min-w-0 flex-1">
-                <p className="truncate">{key.name || t("sites.keys.unnamed")}</p>
+                <p className="truncate">{key.name || t("keys.unnamed")}</p>
                 <p className="truncate font-mono text-xs text-muted-foreground">{key.key}</p>
               </div>
               {key.group && <Badge>{key.group}</Badge>}
-              <Badge tone={key.enabled ? "success" : "neutral"}>{key.enabled ? t("sites.keys.enabled") : t("sites.keys.disabled")}</Badge>
+              <Badge tone={key.enabled ? "success" : "neutral"}>{key.enabled ? t("keys.enabled") : t("keys.disabled")}</Badge>
               <CopyKeyButton siteId={siteId} keyId={key.id} onError={setCopyError} />
             </li>
           ))}
@@ -141,7 +141,7 @@ function CopyKeyButton({
     },
     onError,
   });
-  const label = copied ? t("common.copied") : t("sites.keys.copy");
+  const label = copied ? t("common.copied") : t("keys.copy");
   return (
     <Button
       variant={labelled ? "secondary" : "ghost"}

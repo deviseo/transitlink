@@ -128,6 +128,8 @@ pub fn run() {
             commands::app_settings,
             commands::set_close_to_tray,
             commands::set_language,
+            commands::set_current_site,
+            commands::switch_tools,
             commands::load_site_link,
             commands::attach_site_link,
             commands::refresh_site_links,

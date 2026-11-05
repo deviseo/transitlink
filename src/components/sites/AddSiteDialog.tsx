@@ -1,6 +1,6 @@
 import { useEffect, useState, type SubmitEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -17,6 +17,7 @@ import {
   listSites,
   loadSiteLink,
   loginSite,
+  setCurrentSite,
   submitLoginCode,
   submitLoginPassword,
   webLogin,
@@ -25,6 +26,7 @@ import {
   type SiteLink,
   type SiteView,
 } from "../../lib/api";
+import { settingsKey } from "../../lib/currentSite";
 import { errorText } from "../../lib/errors";
 
 type Step =
@@ -55,6 +57,7 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
   onAdded: (site: SiteView, viaLink: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [step, setStep] = useState<Step>({ kind: "url" });
   const [url, setUrl] = useState(initialUrl);
   const [account, setAccount] = useState(initialAccount);
@@ -129,8 +132,18 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
     setStep({ kind: "link" });
   };
 
+  /** 新接入的站点（或刚换上站长品牌的站点）成为当前站点；只是重新登录的不动。工具不跟着切。 */
+  const makeCurrent = async (site: SiteView) => {
+    try {
+      queryClient.setQueryData(settingsKey, await setCurrentSite(site.id));
+    } catch {
+      // 记不下来也不影响接入，界面会自动挑一个站点。
+    }
+  };
+
   const finish = async (site: SiteView) => {
     setPassword("");
+    if (!(sites.data ?? []).some((item) => item.id === site.id)) await makeCurrent(site);
     if (!link) {
       onAdded(site, false);
       return;
@@ -148,7 +161,10 @@ export function AddSiteDialog({ open, initialUrl = "", initialAccount = "", init
     void run(async () => {
       let updated: SiteView | null = null;
       for (const site of existing) updated = await attachSiteLink(site.id, link.configUrl);
-      if (updated) onAdded(updated, false);
+      if (updated) {
+        await makeCurrent(updated);
+        onAdded(updated, false);
+      }
     });
   };
 

@@ -1,4 +1,4 @@
-//! 应用自己的设置：`~/.transitlink/settings.json`（界面语言、关掉窗口后是否留在托盘）。
+//! 应用自己的设置：`~/.transitlink/settings.json`（界面语言、关掉窗口后是否留在托盘、当前站点）。
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -14,6 +14,10 @@ pub struct AppSettings {
     pub close_to_tray: bool,
     /// 界面语言，托盘菜单跟着用（由前端告诉我们）。
     pub language: String,
+    /// 界面上的当前站点：概览、密钥、工单都看这个站点。不一定是 Claude Code / Codex 在用的站点
+    /// （切换站点时用户可以选择工具不跟着切）。没选过时为空，界面自己挑一个。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_site: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -21,6 +25,7 @@ impl Default for AppSettings {
         Self {
             close_to_tray: true,
             language: "zh-CN".to_string(),
+            current_site: None,
         }
     }
 }
@@ -86,12 +91,16 @@ mod tests {
         store
             .update(|settings| settings.language = "en-US".into())
             .unwrap();
+        store
+            .update(|settings| settings.current_site = Some("site-1".into()))
+            .unwrap();
         let reloaded = SettingsStore::load(path);
         assert_eq!(
             reloaded.get(),
             AppSettings {
                 close_to_tray: false,
-                language: "en-US".into()
+                language: "en-US".into(),
+                current_site: Some("site-1".into()),
             }
         );
         std::fs::remove_dir_all(&dir).unwrap();

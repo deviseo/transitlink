@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleCheck, CircleX, Copy, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Zap } from "lucide-react";
+import { ArrowRightLeft, CircleAlert, CircleCheck, CircleX, Copy, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Zap } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { InfoRow } from "../components/ui/info-row";
-import { detectTools, getAppInfo, listSites, restoreTool, setToolModel, testTool, toolModels, type ToolKind, type ToolOverview } from "../lib/api";
+import { detectTools, getAppInfo, listSites, restoreTool, setToolModel, switchTools, testTool, toolModels, type ToolKind, type ToolOverview } from "../lib/api";
+import { siteName, useCurrentSite } from "../lib/currentSite";
 import { errorText } from "../lib/errors";
 import { installCommand, testText } from "../lib/tools";
 
@@ -19,6 +20,7 @@ export function ToolsPage() {
   const app = useQuery({ queryKey: ["app-info"], queryFn: getAppInfo });
   const [setup, setSetup] = useState<ToolKind | null>(null);
   const hasSites = (sites.data ?? []).length > 0;
+  const { site: current } = useCurrentSite();
 
   return (
     <div className="space-y-6">
@@ -37,7 +39,7 @@ export function ToolsPage() {
           <ToolCard key={tool.kind} tool={tool} platform={app.data?.platform} hasSites={hasSites} onSetup={() => setSetup(tool.kind)} />
         ))}
       </div>
-      <SetupDialog open={setup !== null} only={setup ?? undefined} onClose={() => setSetup(null)} />
+      <SetupDialog open={setup !== null} only={setup ?? undefined} initialSiteId={current?.id} onClose={() => setSetup(null)} />
     </div>
   );
 }
@@ -95,6 +97,19 @@ function ConfigSection({ tool, hasSites, onSetup }: { tool: ToolOverview; hasSit
     },
   });
   const ours = tool.state === "configured" || tool.state === "changed";
+  // 用的不是左上角的当前站点：可以只把这个工具改用当前站点。
+  const { site: current, sites } = useCurrentSite();
+  const appliedSite = sites.find((site) => site.id === tool.applied?.siteId);
+  const elsewhere = tool.state === "configured" && tool.applied && current && tool.applied.siteId !== current.id;
+  const useCurrent = useMutation({
+    mutationFn: async () => {
+      if (!current) return;
+      const report = await switchTools(current.id, [tool.kind]);
+      if (report.failures.length > 0) throw report.failures[0].error;
+    },
+    onSuccess: () => test.reset(),
+    onSettled: refresh,
+  });
 
   if (tool.state === "invalid") {
     return (
@@ -111,13 +126,23 @@ function ConfigSection({ tool, hasSites, onSetup }: { tool: ToolOverview; hasSit
         <div className="rounded-lg bg-muted/60 p-3 text-sm">
           <p className="flex items-center gap-1.5 font-medium text-success">
             <CircleCheck className="h-4 w-4 shrink-0" aria-hidden />
-            {t("tools.state.configured", { site: tool.applied.siteName })}
+            {t("tools.state.configured", { site: appliedSite ? siteName(appliedSite) : tool.applied.siteName })}
           </p>
           <dl className="mt-2 space-y-1.5">
             <InfoRow label={t("tools.key")} value={tool.applied.keyName} />
             <InfoRow label={t("tools.group")} value={tool.applied.group} />
             <ModelRow tool={tool} onChanged={refresh} />
           </dl>
+          {elsewhere && current && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+              <p className="text-xs text-muted-foreground">{t("tools.notCurrent", { site: siteName(current) })}</p>
+              <Button variant="secondary" size="sm" onClick={() => useCurrent.mutate()} disabled={useCurrent.isPending}>
+                {useCurrent.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <ArrowRightLeft className="h-4 w-4" aria-hidden />}
+                {t("tools.useCurrent", { site: siteName(current) })}
+              </Button>
+              {useCurrent.isError && <p className="w-full text-xs text-danger">{errorText(t, useCurrent.error)}</p>}
+            </div>
+          )}
         </div>
       )}
       {tool.state === "changed" && (

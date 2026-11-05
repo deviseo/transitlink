@@ -88,8 +88,3 @@ export function TicketConsent({ site }: { site: SiteView }) {
 export function CharCount({ value, max }: { value: string; max: number }) {
   return <span className={cn("text-xs tabular-nums", value.length >= max ? "text-danger" : "text-muted-foreground")}>{`${value.length}/${max}`}</span>;
 }
-
-/** 站点在工单页里的名字：站长的品牌名和账号。 */
-export function siteLabel(site: SiteView): string {
-  return `${site.config?.brand.name || site.name} · ${site.account}`;
-}

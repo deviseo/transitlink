@@ -1,6 +1,7 @@
 import { createHashRouter } from "react-router";
 import { AppLayout } from "./components/layout/AppLayout";
 import { HomePage } from "./pages/HomePage";
+import { KeysPage } from "./pages/KeysPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SitesPage } from "./pages/SitesPage";
 import { TicketDetailPage } from "./pages/TicketDetailPage";
@@ -14,6 +15,7 @@ export const router = createHashRouter([
     element: <AppLayout />,
     children: [
       { index: true, element: <HomePage /> },
+      { path: "keys", element: <KeysPage /> },
       { path: "sites", element: <SitesPage /> },
       { path: "tools", element: <ToolsPage /> },
       { path: "tickets", element: <TicketsPage /> },
