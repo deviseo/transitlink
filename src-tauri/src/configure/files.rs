@@ -36,11 +36,21 @@ pub fn backup(
     now: u64,
     keep_original: bool,
 ) -> io::Result<Option<PathBuf>> {
+    backup_named(path, &file_name(path), dir, now, keep_original)
+}
+
+/// 同 [`backup`]，备份用 `name` 命名（同一个工具有几个同名文件时用，例如 DSH 的各个配置档）。
+pub fn backup_named(
+    path: &Path,
+    name: &str,
+    dir: &Path,
+    now: u64,
+    keep_original: bool,
+) -> io::Result<Option<PathBuf>> {
     if !path.is_file() {
         return Ok(None);
     }
     create_private_dir(dir)?;
-    let name = file_name(path);
     if keep_original {
         let original = dir.join(format!("{ORIGINAL_PREFIX}{name}"));
         if !original.exists() {
@@ -79,26 +89,56 @@ fn prune(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// 原子写入。已有文件保留原来的权限；新建的文件只有自己能读写（里面有 Key）。
+/// 原子写入。已有文件保留原来的权限；新建的文件只有自己能读写（里面有 Key）。临时文件一建出来
+/// 就是这个权限，写的过程中别人也读不到。
 pub fn write(path: &Path, contents: &str) -> io::Result<()> {
+    use std::io::Write;
     let target = real_path(path)?;
     let dir = target
         .parent()
         .ok_or_else(|| io::Error::other("config path has no parent directory"))?;
     fs::create_dir_all(dir)?;
     let temp = dir.join(format!(".{}.transitlink-tmp", file_name(&target)));
-    fs::write(&temp, contents)?;
     #[cfg(unix)]
-    {
+    let mode = {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&target)
+        fs::metadata(&target)
             .map(|metadata| metadata.permissions().mode() & 0o777)
-            .unwrap_or(0o600);
-        fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
-    }
-    fs::rename(&temp, &target).inspect_err(|_| {
-        let _ = fs::remove_file(&temp);
-    })
+            .unwrap_or(0o600)
+    };
+    let create = || {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
+        }
+        options.open(&temp)
+    };
+    // 上次写到一半留下的临时文件：删掉重来。
+    let mut file = match create() {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::remove_file(&temp)?;
+            create()?
+        }
+        other => other?,
+    };
+    let written = file.write_all(contents.as_bytes()).and_then(|_| {
+        // umask 可能去掉了原来的部分权限，改回和原文件一样。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
+        }
+        Ok(())
+    });
+    drop(file);
+    written
+        .and_then(|_| fs::rename(&temp, &target))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&temp);
+        })
 }
 
 /// 删除配置文件（还原时，文件本来不存在、我们写进去的又都撤掉了）。
@@ -171,9 +211,41 @@ mod tests {
             !dir.join("nested/.settings.json.transitlink-tmp").exists(),
             "temp file is renamed away"
         );
+        // 上次写到一半留下的临时文件不挡路。
+        fs::write(dir.join("nested/.settings.json.transitlink-tmp"), "partial").unwrap();
+        write(&path, "{\"b\":2}\n").unwrap();
+        assert_eq!(read(&path).unwrap().as_deref(), Some("{\"b\":2}\n"));
         remove(&path).unwrap();
         remove(&path).unwrap();
         assert_eq!(read(&path).unwrap(), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn same_named_files_keep_their_own_originals() {
+        let dir = temp_dir("named");
+        let backups = dir.join("backups");
+        for (profile, text) in [("web", "- id: a\n"), ("desktop", "- id: b\n")] {
+            let path = dir.join(profile).join("cordis.patch.yml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+            backup_named(
+                &path,
+                &format!("{profile}-cordis.patch.yml"),
+                &backups,
+                1_000,
+                true,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(backups.join("original-web-cordis.patch.yml")).unwrap(),
+            "- id: a\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backups.join("original-desktop-cordis.patch.yml")).unwrap(),
+            "- id: b\n"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

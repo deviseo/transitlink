@@ -6,6 +6,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod dsh;
 pub(crate) mod files;
 pub mod gemini;
 pub mod grok;
@@ -35,6 +36,10 @@ pub enum ConfigError {
     Io(String),
     /// 这个工具还没有用 TransitLink 配置过。
     NotConfigured,
+    /// 配置没法自动修改（用了特殊写法，或者被别的设置盖住了），附上是哪个文件或哪一项。
+    Unsupported(String),
+    /// 工具自己正在保存配置（文件被锁住了），稍后再试。
+    Busy,
     /// 测试没通过（配置前测试失败时，什么都没写）。
     Test(TestResult),
     Site(SiteError),
@@ -192,6 +197,8 @@ fn read_connection(kind: ToolKind, text: Option<&str>) -> Result<Connection, Con
                 provider: current.default,
             }
         }
+        // 几个文件，由 Configurator::connection 单独读。
+        ToolKind::DeepseekHarness => Connection::default(),
         ToolKind::OpenCode => {
             let current = opencode::read(text)?;
             let ours = current.provider.as_deref() == Some(opencode::PROVIDER_ID);
@@ -239,7 +246,24 @@ impl Configurator {
         self.data_dir.join("backups").join(kind.backup_dir())
     }
 
+    /// DeepSeek Harness 的数据目录（`DSH_HOME` 或 `~/.dsh`）。
+    fn dsh_home(&self) -> PathBuf {
+        dsh::home(&self.home, &*self.env)
+    }
+
     fn connection(&self, kind: ToolKind) -> Result<Connection, ConfigError> {
+        if kind == ToolKind::DeepseekHarness {
+            let current = dsh::read(&self.dsh_home())?;
+            let ours = current.provider.as_deref() == Some(dsh::PROVIDER_ID);
+            return Ok(Connection {
+                ours,
+                other: current.provider.is_some() && !ours,
+                base_url: current.base_url,
+                token: current.token,
+                model: current.model,
+                provider: current.provider,
+            });
+        }
         let path = self.config_path(kind);
         let text = files::read(&path)?;
         read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))
@@ -339,7 +363,11 @@ impl Configurator {
         let path = self.config_path(kind);
         // 先确认配置文件能改，免得建好 Key 才发现写不进去。
         let text = files::read(&path)?;
-        read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))?;
+        if kind == ToolKind::DeepseekHarness {
+            dsh::check(&self.dsh_home())?;
+        } else {
+            read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))?;
+        }
 
         let (key, key_created) = accounts
             .tool_key(site_id, kind.key_name(), group_id)
@@ -367,7 +395,13 @@ impl Configurator {
         let previous = self.state.get(kind);
         let now = crate::clock::now_secs();
         let backups = self.backup_dir(kind);
-        files::backup(&path, &backups, now, previous.is_none())?;
+        if kind == ToolKind::DeepseekHarness {
+            for (file, name) in dsh::files(&self.dsh_home()) {
+                files::backup_named(&file, &name, &backups, now, previous.is_none())?;
+            }
+        } else {
+            files::backup(&path, &backups, now, previous.is_none())?;
+        }
         let snapshot = match kind {
             ToolKind::ClaudeCode => {
                 let previous = previous.as_ref().map(|applied| {
@@ -436,6 +470,23 @@ impl Configurator {
                 let (out, snapshot) = grok::apply(text.as_deref(), &target, previous.as_ref())
                     .map_err(|error| error.at(&path))?;
                 files::write(&path, &out)?;
+                serde_json::to_value(snapshot)
+            }
+            ToolKind::DeepseekHarness => {
+                let previous = previous.as_ref().map(|applied| {
+                    serde_json::from_value::<dsh::Snapshot>(applied.snapshot.clone())
+                        .unwrap_or_default()
+                });
+                let chosen = model.as_deref().unwrap_or_default();
+                let family = probe::dsh_family(chosen, &ids);
+                let target = dsh::Target {
+                    site_name: &site.info.name,
+                    base_url: &base_url,
+                    token: &key.key,
+                    model: chosen,
+                    models: &family,
+                };
+                let snapshot = dsh::apply(&self.dsh_home(), &target, previous.as_ref())?;
                 serde_json::to_value(snapshot)
             }
             ToolKind::OpenCode => {
@@ -564,6 +615,10 @@ impl Configurator {
             let current = connection.model.unwrap_or_default();
             return Ok(probe::opencode_family(&current, &ids));
         }
+        if kind == ToolKind::DeepseekHarness {
+            let current = connection.model.unwrap_or_default();
+            return Ok(probe::dsh_family(&current, &ids));
+        }
         Ok(probe::order_for(kind, ids))
     }
 
@@ -571,6 +626,16 @@ impl Configurator {
     pub async fn set_model(&self, kind: ToolKind, model: Option<&str>) -> Result<(), ConfigError> {
         let _guard = self.lock.lock().await;
         let mut applied = self.state.get(kind).ok_or(ConfigError::NotConfigured)?;
+        if kind == ToolKind::DeepseekHarness {
+            let model = model.ok_or(ConfigError::Test(TestResult::NoFamilyModels { models: 0 }))?;
+            let home = self.dsh_home();
+            let now = crate::clock::now_secs();
+            for (file, name) in dsh::files(&home) {
+                files::backup_named(&file, &name, &self.backup_dir(kind), now, false)?;
+            }
+            dsh::set_model(&home, model)?;
+            return self.remember_model(kind, &mut applied, Some(model));
+        }
         let path = self.config_path(kind);
         let text = files::read(&path)?;
         let out = match (kind, model) {
@@ -582,11 +647,22 @@ impl Configurator {
             (ToolKind::GeminiCli, Some(model)) => gemini::set_model(text.as_deref(), model),
             (ToolKind::GrokBuild, Some(model)) => grok::set_model(text.as_deref(), model),
             (ToolKind::OpenCode, Some(model)) => opencode::set_model(text.as_deref(), model),
+            (ToolKind::DeepseekHarness, Some(_)) => unreachable!("handled above"),
         }
         .map_err(|error| error.at(&path))?;
         let now = crate::clock::now_secs();
         files::backup(&path, &self.backup_dir(kind), now, false)?;
         files::write(&path, &out)?;
+        self.remember_model(kind, &mut applied, model)
+    }
+
+    /// 记下换好的模型（下次切换到这个站点时沿用）。
+    fn remember_model(
+        &self,
+        kind: ToolKind,
+        applied: &mut Applied,
+        model: Option<&str>,
+    ) -> Result<(), ConfigError> {
         applied.model = model.map(str::to_string);
         let mut choice = self
             .state
@@ -594,7 +670,7 @@ impl Configurator {
             .unwrap_or_default();
         choice.model = applied.model.clone();
         self.state.remember(&applied.site_id, kind, choice)?;
-        self.state.set(kind, applied)?;
+        self.state.set(kind, applied.clone())?;
         Ok(())
     }
 
@@ -655,6 +731,18 @@ impl Configurator {
     pub async fn restore(&self, kind: ToolKind) -> Result<(), ConfigError> {
         let _guard = self.lock.lock().await;
         let applied = self.state.get(kind).ok_or(ConfigError::NotConfigured)?;
+        if kind == ToolKind::DeepseekHarness {
+            let snapshot: dsh::Snapshot =
+                serde_json::from_value(applied.snapshot).unwrap_or_default();
+            let home = self.dsh_home();
+            let now = crate::clock::now_secs();
+            for (file, name) in dsh::files(&home) {
+                files::backup_named(&file, &name, &self.backup_dir(kind), now, false)?;
+            }
+            dsh::restore(&home, &snapshot)?;
+            self.state.remove(kind)?;
+            return Ok(());
+        }
         let path = self.config_path(kind);
         let text = files::read(&path)?;
         let restored = match kind {
@@ -686,6 +774,7 @@ impl Configurator {
                     serde_json::from_value(applied.snapshot).unwrap_or_default();
                 opencode::restore(text.as_deref(), &snapshot)
             }
+            ToolKind::DeepseekHarness => unreachable!("handled above"),
         }
         .map_err(|error| error.at(&path))?;
         files::backup(
@@ -724,7 +813,10 @@ fn operator_recommend(
         ToolKind::ClaudeCode => &config.recommend.claude_code,
         ToolKind::Codex => &config.recommend.codex,
         // 新工具 TransitHub 还没有推荐设置：按分组认。
-        ToolKind::GeminiCli | ToolKind::GrokBuild | ToolKind::OpenCode => return None,
+        ToolKind::GeminiCli
+        | ToolKind::GrokBuild
+        | ToolKind::OpenCode
+        | ToolKind::DeepseekHarness => return None,
     })
 }
 
@@ -748,10 +840,15 @@ fn recommend(
         return (Some(group.id.clone()), true);
     }
     // OpenCode 什么模型都能用：优先 Claude 分组，其次 GPT 分组。
-    let wanted: &[ToolKind] = if kind == ToolKind::OpenCode {
-        &[ToolKind::ClaudeCode, ToolKind::Codex]
-    } else {
-        std::slice::from_ref(&kind)
+    // DeepSeek Harness 优先 DeepSeek 分组，其次和 OpenCode 一样。
+    let wanted: &[ToolKind] = match kind {
+        ToolKind::OpenCode => &[ToolKind::ClaudeCode, ToolKind::Codex],
+        ToolKind::DeepseekHarness => &[
+            ToolKind::DeepseekHarness,
+            ToolKind::ClaudeCode,
+            ToolKind::Codex,
+        ],
+        _ => std::slice::from_ref(&kind),
     };
     for candidate in wanted {
         if let Some(group) = groups
@@ -777,6 +874,8 @@ fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool 
                 ToolKind::GeminiCli => &["gemini"],
                 ToolKind::GrokBuild => &["grok"],
                 ToolKind::OpenCode => &["anthropic", "openai"],
+                // 只认 DeepSeek 分组；Claude、GPT 分组在 recommend 里按顺序再找。
+                ToolKind::DeepseekHarness => &["deepseek"],
             };
             group
                 .platform
@@ -801,6 +900,7 @@ fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool 
                     fits_group(ToolKind::ClaudeCode, platform, group)
                         || fits_group(ToolKind::Codex, platform, group)
                 }
+                ToolKind::DeepseekHarness => text.contains("deepseek"),
             }
         }
     }

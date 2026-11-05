@@ -37,7 +37,7 @@ pub fn fits(kind: ToolKind, id: &str) -> bool {
         ToolKind::Codex => id.starts_with("gpt-") || id.contains("codex"),
         ToolKind::GeminiCli => id.contains("gemini") && !special_purpose(&id),
         ToolKind::GrokBuild => id.contains("grok") && !special_purpose(&id),
-        ToolKind::OpenCode => !special_purpose(&id),
+        ToolKind::OpenCode | ToolKind::DeepseekHarness => !special_purpose(&id),
     }
 }
 
@@ -110,7 +110,27 @@ pub fn pick_model(kind: ToolKind, ids: &[String]) -> Option<String> {
         })
         .or_else(|| pick_codex_model(ids))
         .or_else(|| ids.iter().find(|id| fits(kind, id)).cloned()),
+        // DeepSeek 自己的工具：有 DeepSeek 模型就用（flash、lite 往后放），其次和 OpenCode 一样。
+        ToolKind::DeepseekHarness => best(
+            &|id| id.contains("deepseek") && !special_purpose(id),
+            &|id| vec![u32::from(!id.contains("flash") && !id.contains("lite"))],
+        )
+        .or_else(|| pick_model(ToolKind::OpenCode, ids)),
     }
+}
+
+/// DeepSeek Harness 一个服务商也只用一种接口：DeepSeek 模型、Claude 模型、其他模型分开列
+/// （DeepSeek 模型要按 DeepSeek 的格式读思考内容）。
+pub fn dsh_family(model: &str, ids: &[String]) -> Vec<String> {
+    let group = |id: &str| {
+        let lower = id.to_ascii_lowercase();
+        (lower.contains("deepseek"), lower.contains("claude"))
+    };
+    let wanted = group(model);
+    ids.iter()
+        .filter(|id| !special_purpose(&id.to_ascii_lowercase()) && group(id) == wanted)
+        .cloned()
+        .collect()
 }
 
 /// OpenCode 一个服务商只能用一种接口：选了 Claude 模型就列 Claude 模型（Anthropic 接口），

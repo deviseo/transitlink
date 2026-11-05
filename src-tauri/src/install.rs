@@ -38,12 +38,21 @@ pub enum Method {
     },
     /// Windows：PowerShell 运行官方安装脚本。
     PowerShell { url: &'static str },
-    /// npm 全局安装，需要 Node.js（至少 `node_major` 版）。
+    /// npm 全局安装，需要 Node.js（至少 `node_major` 版）。`extra`：额外参数。
     Npm {
         package: &'static str,
         node_major: u32,
+        extra: &'static [&'static str],
     },
 }
+
+/// npm 12 默认拦截依赖包的安装脚本：靠安装脚本放好程序的包（OpenCode 等）要明确允许，
+/// 否则装完只有一个占位文件（做法参考 cc-switch）。npm 10、11 上这些参数没有副作用。
+const NPM_ALLOW_SCRIPTS_OPENCODE: &[&str] = &[
+    "--ignore-scripts=false",
+    "--include=optional",
+    "--allow-scripts=opencode-ai",
+];
 
 /// 每个工具在当前系统上的官方安装方式：
 /// - Claude Code、Codex、Grok Build：官方安装脚本，不需要 Node.js；
@@ -76,10 +85,18 @@ pub fn method(kind: ToolKind) -> Method {
         ToolKind::GeminiCli => Method::Npm {
             package: "@google/gemini-cli",
             node_major: 20,
+            extra: &[],
         },
         ToolKind::OpenCode if windows => Method::Npm {
             package: "opencode-ai",
             node_major: 18,
+            extra: NPM_ALLOW_SCRIPTS_OPENCODE,
+        },
+        // 现在的包没有声明 Node 版本要求（装之前我们自己检查）；以后声明了，版本不对时 npm 直接拒绝。
+        ToolKind::DeepseekHarness => Method::Npm {
+            package: "@deepseek-ai/dsh",
+            node_major: 22,
+            extra: &["--engine-strict"],
         },
         ToolKind::OpenCode => Method::Unix {
             url: "https://opencode.ai/install",
@@ -93,12 +110,13 @@ pub fn display_command(method: Method, mirror: bool) -> String {
     match method {
         Method::Unix { url, shell } => format!("curl -fsSL {url} | {shell}"),
         Method::PowerShell { url } => format!("irm {url} | iex"),
-        Method::Npm { package, .. } => npm_args(package, mirror).join(" "),
+        Method::Npm { package, extra, .. } => npm_args(package, extra, mirror).join(" "),
     }
 }
 
-fn npm_args(package: &str, mirror: bool) -> Vec<String> {
+fn npm_args(package: &str, extra: &[&str], mirror: bool) -> Vec<String> {
     let mut args = vec!["npm".into(), "install".into(), "-g".into(), package.into()];
+    args.extend(extra.iter().map(|arg| arg.to_string()));
     if mirror {
         args.push(format!("--registry={NPM_MIRROR}"));
     }
@@ -138,6 +156,9 @@ pub enum InstallOutcome {
     TimedOut { command: String },
     /// 其他失败。
     Failed { code: Option<i32>, command: String },
+    /// 这里没法升级：`command` 是请用户在终端里运行的命令（pnpm、bun 等装的）；为空时是桌面版带的，
+    /// 请在桌面版里更新。
+    Manual { command: Option<String> },
 }
 
 /// 同一时间只装一个。
@@ -164,37 +185,134 @@ impl Installer {
         let search = tools::search_path(&home, std::env::var_os("PATH"));
         let method = method(kind);
         let display = display_command(method, mirror);
-        let mut command = match prepare(method, &home, &search, mirror).await {
+        let command = match prepare(method, &home, &search, mirror).await {
             Ok(command) => command,
             Err(outcome) => return Ok(outcome),
         };
-        command.env("PATH", &search);
-        for (key, value) in proxy_env(|key| std::env::var_os(key).is_some()) {
-            command.env(key, value);
-        }
-        emit(app, kind, &format!("$ {display}"));
-        let finished = run(command, |line| emit(app, kind, line)).await;
-        Ok(match finished {
-            Run::TimedOut => InstallOutcome::TimedOut { command: display },
-            Run::Spawn => InstallOutcome::Failed {
-                code: None,
-                command: display,
-            },
-            Run::Done { code, lines } => {
-                if code == Some(0) {
-                    // 重新检测要运行 --version、读终端的 PATH，放到后台线程里。
-                    tauri::async_runtime::spawn_blocking(move || installed(kind, &home))
-                        .await
-                        .unwrap_or(InstallOutcome::Installed {
-                            version: None,
-                            binary_path: None,
-                            path_hint: None,
-                        })
-                } else {
-                    failure(method, code, &lines, display)
-                }
+        let npm = matches!(method, Method::Npm { .. });
+        Ok(execute(app, kind, command, display, npm, &search, home).await)
+    }
+
+    /// 升级：按工具是怎么装的选办法（见 `upgrade`）。`target`：要升到的版本（查到的最新版）。
+    pub async fn upgrade(
+        &self,
+        app: &AppHandle,
+        kind: ToolKind,
+        mirror: bool,
+        target: Option<&str>,
+    ) -> Result<InstallOutcome, Busy> {
+        let Ok(_guard) = self.lock.try_lock() else {
+            return Err(Busy);
+        };
+        let home = crate::paths::home_dir();
+        let search = tools::search_path(&home, std::env::var_os("PATH"));
+        let status = tauri::async_runtime::spawn_blocking(move || tools::detect_one(kind))
+            .await
+            .ok();
+        // 检测不到（例如刚被卸载）：按失败处理，界面会重新检测。
+        let not_upgradable = InstallOutcome::Failed {
+            code: None,
+            command: String::new(),
+        };
+        let Some((binary, version)) = status.and_then(|status| {
+            status
+                .binary_path
+                .map(|binary| (std::path::PathBuf::from(binary), status.version))
+        }) else {
+            return Ok(not_upgradable);
+        };
+        // 命令所在的目录放在 PATH 最前面：`#!/usr/bin/env node` 要找到同一处的 node，npm 也先找同一处的。
+        let mut dirs: Vec<std::path::PathBuf> =
+            binary.parent().map(Path::to_path_buf).into_iter().collect();
+        dirs.extend(std::env::split_paths(&search));
+        let search = std::env::join_paths(dirs).unwrap_or(search);
+        let plan = crate::upgrade::plan(
+            kind,
+            &binary,
+            version.as_deref(),
+            target,
+            mirror,
+            &search,
+            &home,
+        );
+        let (command, display, npm) = match plan {
+            None => return Ok(not_upgradable),
+            Some(crate::upgrade::Plan::Manual { command }) => {
+                return Ok(InstallOutcome::Manual { command });
             }
-        })
+            Some(crate::upgrade::Plan::Reinstall(reinstall)) => {
+                let command = match prepare(reinstall, &home, &search, mirror).await {
+                    Ok(command) => command,
+                    Err(outcome) => return Ok(outcome),
+                };
+                let npm = matches!(reinstall, Method::Npm { .. });
+                (command, display_command(reinstall, mirror), npm)
+            }
+            Some(crate::upgrade::Plan::Run {
+                program,
+                args,
+                display,
+                npm,
+            }) => {
+                // 只能用 npm 装的工具，升级前也确认 Node.js 版本够：新版装上了却运行不了更麻烦。
+                if npm && let Method::Npm { node_major, .. } = method(kind) {
+                    let found = node_version(&home, &search).await;
+                    if found
+                        .as_deref()
+                        .and_then(major_version)
+                        .is_none_or(|major| major < node_major)
+                    {
+                        return Ok(InstallOutcome::NeedsNode {
+                            required: node_major,
+                            found,
+                        });
+                    }
+                }
+                let mut command = Command::new(program);
+                command.args(args);
+                (command, display, npm)
+            }
+        };
+        Ok(execute(app, kind, command, display, npm, &search, home).await)
+    }
+}
+
+/// 运行安装或升级命令，把输出发给界面，结束后重新检测（或者分析失败原因；`npm`：是 npm 命令）。
+async fn execute(
+    app: &AppHandle,
+    kind: ToolKind,
+    mut command: Command,
+    display: String,
+    npm: bool,
+    search: &OsString,
+    home: std::path::PathBuf,
+) -> InstallOutcome {
+    command.env("PATH", search);
+    for (key, value) in proxy_env(|key| std::env::var_os(key).is_some()) {
+        command.env(key, value);
+    }
+    emit(app, kind, &format!("$ {display}"));
+    let finished = run(command, |line| emit(app, kind, line)).await;
+    match finished {
+        Run::TimedOut => InstallOutcome::TimedOut { command: display },
+        Run::Spawn => InstallOutcome::Failed {
+            code: None,
+            command: display,
+        },
+        Run::Done { code, lines } => {
+            if code == Some(0) {
+                // 重新检测要运行 --version、读终端的 PATH，放到后台线程里。
+                tauri::async_runtime::spawn_blocking(move || installed(kind, &home))
+                    .await
+                    .unwrap_or(InstallOutcome::Installed {
+                        version: None,
+                        binary_path: None,
+                        path_hint: None,
+                    })
+            } else {
+                failure(npm, code, &lines, display)
+            }
+        }
     }
 }
 
@@ -240,6 +358,7 @@ async fn prepare(
         Method::Npm {
             package,
             node_major,
+            extra,
         } => {
             let found = node_version(home, search).await;
             if found
@@ -259,7 +378,7 @@ async fn prepare(
                 }
             })?;
             let mut command = Command::new(npm);
-            command.args(&npm_args(package, mirror)[1..]);
+            command.args(&npm_args(package, extra, mirror)[1..]);
             Ok(command)
         }
     }
@@ -469,10 +588,9 @@ fn installed(kind: ToolKind, home: &Path) -> InstallOutcome {
     }
 }
 
-/// 按输出判断失败原因。
-fn failure(method: Method, code: Option<i32>, lines: &[String], command: String) -> InstallOutcome {
+/// 按输出判断失败原因（`npm`：是 npm 命令）。
+fn failure(npm: bool, code: Option<i32>, lines: &[String], command: String) -> InstallOutcome {
     let text = lines.join("\n");
-    let npm = matches!(method, Method::Npm { .. });
     if npm && (text.contains("EACCES") || text.contains("EPERM")) {
         return InstallOutcome::NpmPermission {
             command: if cfg!(windows) {
@@ -529,14 +647,10 @@ mod tests {
 
     #[test]
     fn failures_are_explained_from_the_output() {
-        let npm = Method::Npm {
-            package: "@scope/tool",
-            node_major: 20,
-        };
         let lines = |text: &str| vec![text.to_string()];
         assert!(matches!(
             failure(
-                npm,
+                true,
                 Some(243),
                 &lines("npm error code EACCES"),
                 "npm install -g @scope/tool".into()
@@ -545,20 +659,16 @@ mod tests {
         ));
         assert!(matches!(
             failure(
-                npm,
+                true,
                 Some(1),
                 &lines("npm error code ETIMEDOUT"),
                 String::new()
             ),
             InstallOutcome::Network { .. }
         ));
-        let script = Method::Unix {
-            url: "https://claude.ai/install.sh",
-            shell: "bash",
-        };
         assert!(matches!(
             failure(
-                script,
+                false,
                 Some(28),
                 &lines("curl: (28) Failed to connect to claude.ai"),
                 String::new()
@@ -566,12 +676,7 @@ mod tests {
             InstallOutcome::Network { .. }
         ));
         assert_eq!(
-            failure(
-                script,
-                Some(1),
-                &lines("unsupported platform"),
-                "cmd".into()
-            ),
+            failure(false, Some(1), &lines("unsupported platform"), "cmd".into()),
             InstallOutcome::Failed {
                 code: Some(1),
                 command: "cmd".into()
@@ -584,6 +689,7 @@ mod tests {
         let npm = Method::Npm {
             package: "@scope/tool",
             node_major: 20,
+            extra: &[],
         };
         assert_eq!(display_command(npm, false), "npm install -g @scope/tool");
         assert_eq!(

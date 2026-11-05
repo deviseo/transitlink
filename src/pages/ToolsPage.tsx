@@ -1,18 +1,18 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, CircleAlert, CircleCheck, CircleX, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Zap } from "lucide-react";
+import { ArrowRightLeft, ArrowUpCircle, CircleAlert, CircleCheck, CircleX, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Zap } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
-import { InstallPanel } from "../components/tools/InstallPanel";
+import { InstallPanel, UpgradePanel } from "../components/tools/InstallPanel";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { InfoRow } from "../components/ui/info-row";
-import { detectTools, getAppInfo, listSites, restoreTool, setToolModel, switchTools, testTool, toolModels, type ToolKind, type ToolOverview } from "../lib/api";
+import { detectTools, getAppInfo, listSites, restoreTool, setToolModel, switchTools, testTool, toolModels, type ToolKind, type ToolLatest, type ToolOverview } from "../lib/api";
 import { siteName, useCurrentSite } from "../lib/currentSite";
 import { errorText } from "../lib/errors";
-import { useToolInstall } from "../lib/install";
+import { useToolInstall, useToolVersions } from "../lib/install";
 import { testText } from "../lib/tools";
 
 export function ToolsPage() {
@@ -23,6 +23,7 @@ export function ToolsPage() {
   const [setup, setSetup] = useState<ToolKind | null>(null);
   const hasSites = (sites.data ?? []).length > 0;
   const { site: current } = useCurrentSite();
+  const versions = useToolVersions(data);
 
   return (
     <div className="space-y-6">
@@ -38,7 +39,14 @@ export function ToolsPage() {
       />
       <div className="grid gap-4 md:grid-cols-2">
         {(data ?? []).map((tool) => (
-          <ToolCard key={tool.kind} tool={tool} platform={app.data?.platform} hasSites={hasSites} onSetup={() => setSetup(tool.kind)} />
+          <ToolCard
+            key={tool.kind}
+            tool={tool}
+            latest={versions.data?.find((item) => item.kind === tool.kind)}
+            platform={app.data?.platform}
+            hasSites={hasSites}
+            onSetup={() => setSetup(tool.kind)}
+          />
         ))}
       </div>
       <SetupDialog open={setup !== null} only={setup ?? undefined} initialSiteId={current?.id} onClose={() => setSetup(null)} />
@@ -46,11 +54,26 @@ export function ToolsPage() {
   );
 }
 
-function ToolCard({ tool, platform, hasSites, onSetup }: { tool: ToolOverview; platform?: string; hasSites: boolean; onSetup: () => void }) {
+function ToolCard({
+  tool,
+  latest,
+  platform,
+  hasSites,
+  onSetup,
+}: {
+  tool: ToolOverview;
+  /** npm 上的最新版本（还没查到时为空）。 */
+  latest?: ToolLatest;
+  platform?: string;
+  hasSites: boolean;
+  onSetup: () => void;
+}) {
   const { t } = useTranslation();
-  // 一键安装：装好后结果（和终端 PATH 的提示）留在卡片上，直到离开这个页面。
+  // 一键安装、升级：结果（和终端 PATH 的提示）留在卡片上，直到离开这个页面。
   const install = useToolInstall(tool.kind);
-  const showInstall = !tool.installed || install.outcome?.status === "installed";
+  const windows = platform === "windows";
+  const upgrading = install.action === "upgrade";
+  const showInstall = !tool.installed || (install.action === "install" && install.outcome?.status === "installed");
   return (
     <Card className="flex flex-col">
       <div className="flex items-start justify-between gap-3">
@@ -72,14 +95,26 @@ function ToolCard({ tool, platform, hasSites, onSetup }: { tool: ToolOverview; p
       </div>
 
       <dl className="mt-4 space-y-2 text-sm">
-        {tool.installed && <InfoRow label={t("tools.version")} value={tool.version} />}
+        {tool.installed && (
+          <VersionRow
+            version={tool.version}
+            latest={latest}
+            busy={install.running || upgrading}
+            onUpgrade={() => void install.upgrade(tool.version, latest?.latest ?? null)}
+          />
+        )}
         {tool.installed && <InfoRow label={t("tools.binary")} value={tool.binaryPath} mono />}
         <InfoRow label={t("tools.config")} value={tool.configExists ? tool.configPath : `${tool.configPath} ${t("tools.configMissing")}`} mono />
       </dl>
 
       {showInstall && (
         <div className="mt-4">
-          <InstallPanel install={install} command={tool.installCommand} npm={tool.installNpm} windows={platform === "windows"} />
+          <InstallPanel install={install} command={tool.installCommand} npm={tool.installNpm} windows={windows} />
+        </div>
+      )}
+      {upgrading && (
+        <div className="mt-4">
+          <UpgradePanel install={install} windows={windows} toolName={t(`tools.${tool.kind}`)} />
         </div>
       )}
 
@@ -143,6 +178,7 @@ function ConfigSection({ tool, hasSites, onSetup }: { tool: ToolOverview; hasSit
             <ModelRow tool={tool} onChanged={refresh} />
           </dl>
           {tool.kind === "geminiCli" && <p className="mt-2 text-xs text-muted-foreground">{t("tools.geminiTrust")}</p>}
+          {tool.kind === "deepseekHarness" && <p className="mt-2 text-xs text-muted-foreground">{t("tools.dshNote")}</p>}
           {elsewhere && current && (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
               <p className="text-xs text-muted-foreground">{t("tools.notCurrent", { site: siteName(current) })}</p>
@@ -205,6 +241,41 @@ function ConfigSection({ tool, hasSites, onSetup }: { tool: ToolOverview; hasSit
           {!hasSites && <span className="text-xs text-muted-foreground">{t("tools.needSite")}</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 版本：有新版本时显示新版本号和「升级」按钮；查过且没有新版本时注明已是最新。 */
+function VersionRow({
+  version,
+  latest,
+  busy,
+  onUpgrade,
+}: {
+  version: string | null;
+  latest?: ToolLatest;
+  /** 正在升级（或者已经升过）：不再显示按钮。 */
+  busy: boolean;
+  onUpgrade: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex gap-3">
+      <dt className="w-20 shrink-0 text-muted-foreground">{t("tools.version")}</dt>
+      <dd className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="break-all">{version || "—"}</span>
+        {latest?.updateAvailable && latest.latest && !busy ? (
+          <>
+            <Badge tone="brand">{t("tools.upgrade.available", { version: latest.latest })}</Badge>
+            <button type="button" onClick={onUpgrade} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
+              <ArrowUpCircle className="h-3.5 w-3.5" aria-hidden />
+              {t("tools.upgrade.button")}
+            </button>
+          </>
+        ) : (
+          latest?.upToDate && <span className="text-xs text-muted-foreground">{t("tools.upgrade.upToDate")}</span>
+        )}
+      </dd>
     </div>
   );
 }

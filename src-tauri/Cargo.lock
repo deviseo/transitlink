@@ -4113,6 +4113,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap 2.14.2",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "serialize-to-javascript"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5213,12 +5226,14 @@ dependencies = [
  "hyper-util",
  "jsonc-parser",
  "keyring",
+ "libc",
  "psl",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "rsa",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tauri",
  "tauri-build",
@@ -5231,6 +5246,7 @@ dependencies = [
  "toml_edit 0.25.18+spec-1.1.0",
  "url",
  "which",
+ "windows-sys 0.61.2",
  "wiremock",
 ]
 
@@ -5329,6 +5345,12 @@ dependencies = [
  "crypto-common",
  "subtle",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

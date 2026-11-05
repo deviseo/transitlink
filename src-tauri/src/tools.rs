@@ -18,15 +18,17 @@ pub enum ToolKind {
     GrokBuild,
     #[serde(rename = "opencode")]
     OpenCode,
+    DeepseekHarness,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 5] = [
+    pub const ALL: [ToolKind; 6] = [
         ToolKind::ClaudeCode,
         ToolKind::Codex,
         ToolKind::GeminiCli,
         ToolKind::GrokBuild,
         ToolKind::OpenCode,
+        ToolKind::DeepseekHarness,
     ];
 
     fn binary(self) -> &'static str {
@@ -36,6 +38,7 @@ impl ToolKind {
             ToolKind::GeminiCli => "gemini",
             ToolKind::GrokBuild => "grok",
             ToolKind::OpenCode => "opencode",
+            ToolKind::DeepseekHarness => "dsh",
         }
     }
 
@@ -47,6 +50,7 @@ impl ToolKind {
             ToolKind::GeminiCli => "geminiCli",
             ToolKind::GrokBuild => "grokBuild",
             ToolKind::OpenCode => "opencode",
+            ToolKind::DeepseekHarness => "deepseekHarness",
         }
     }
 
@@ -58,6 +62,7 @@ impl ToolKind {
             ToolKind::GeminiCli => "gemini-cli",
             ToolKind::GrokBuild => "grok-build",
             ToolKind::OpenCode => "opencode",
+            ToolKind::DeepseekHarness => "deepseek-harness",
         }
     }
 
@@ -69,6 +74,7 @@ impl ToolKind {
             ToolKind::GeminiCli => "TransitLink Gemini CLI",
             ToolKind::GrokBuild => "TransitLink Grok Build",
             ToolKind::OpenCode => "TransitLink OpenCode",
+            ToolKind::DeepseekHarness => "TransitLink DeepSeek Harness",
         }
     }
 
@@ -78,7 +84,9 @@ impl ToolKind {
     /// - Gemini CLI：`GEMINI_CLI_HOME`（代替主目录）或主目录下的 `.gemini/.env`；
     /// - Grok Build：`GROK_HOME` 或 `~/.grok`，`config.toml`；
     /// - OpenCode：`XDG_CONFIG_HOME` 或 `~/.config` 下的 `opencode/`，已有 `opencode.jsonc` 就用它
-    ///   （OpenCode 第一次运行会建这个文件，而且它优先），否则 `opencode.json`。
+    ///   （OpenCode 第一次运行会建这个文件，而且它优先），否则 `opencode.json`；
+    /// - DeepSeek Harness：`DSH_HOME` 或 `~/.dsh` 下 `web` 配置档的 `cordis.patch.yml`（还会改
+    ///   `desktop` 配置档和 `.credentials.yaml`，见 `configure::dsh`）。
     pub fn config_path(self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
         let dir = |variable: &str, default: PathBuf| {
             env(variable)
@@ -104,6 +112,9 @@ impl ToolKind {
                 } else {
                     base.join("opencode.json")
                 }
+            }
+            ToolKind::DeepseekHarness => {
+                crate::configure::dsh::profile_path(&crate::configure::dsh::home(home, env), "web")
             }
         }
     }

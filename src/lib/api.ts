@@ -1,6 +1,6 @@
 import { call, inDesktop } from "./tauri";
 
-export type ToolKind = "claudeCode" | "codex" | "geminiCli" | "grokBuild" | "opencode";
+export type ToolKind = "claudeCode" | "codex" | "geminiCli" | "grokBuild" | "opencode" | "deepseekHarness";
 
 export interface ToolStatus {
   kind: ToolKind;
@@ -208,6 +208,7 @@ const previewTools: ToolOverview[] = [
   { kind: "geminiCli", ...missing, configPath: "~/.gemini/.env", installCommand: "npm install -g @google/gemini-cli", installNpm: true, ...notConfigured },
   { kind: "grokBuild", ...missing, configPath: "~/.grok/config.toml", installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash", installNpm: false, ...notConfigured },
   { kind: "opencode", ...missing, configPath: "~/.config/opencode/opencode.json", installCommand: "curl -fsSL https://opencode.ai/install | bash", installNpm: false, ...notConfigured },
+  { kind: "deepseekHarness", ...missing, configPath: "~/.dsh/profiles/web/cordis.patch.yml", installCommand: "npm install -g @deepseek-ai/dsh --engine-strict", installNpm: true, ...notConfigured },
 ];
 const previewModels: Record<ToolKind, string[]> = {
   claudeCode: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"],
@@ -215,8 +216,9 @@ const previewModels: Record<ToolKind, string[]> = {
   geminiCli: ["gemini-3.1-pro-preview", "gemini-3.8-flash"],
   grokBuild: ["grok-4.7", "grok-code-fast-1"],
   opencode: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
+  deepseekHarness: ["deepseek-v4", "deepseek-v4-flash"],
 };
-const previewToolNames: Record<ToolKind, string> = { claudeCode: "Claude Code", codex: "Codex", geminiCli: "Gemini CLI", grokBuild: "Grok Build", opencode: "OpenCode" };
+const previewToolNames: Record<ToolKind, string> = { claudeCode: "Claude Code", codex: "Codex", geminiCli: "Gemini CLI", grokBuild: "Grok Build", opencode: "OpenCode", deepseekHarness: "DeepSeek Harness" };
 const previewTool = (kind: ToolKind) => previewTools.find((tool) => tool.kind === kind) as ToolOverview;
 const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -233,7 +235,9 @@ export type InstallOutcome =
   | { status: "npmPermission"; command: string }
   | { status: "network"; command: string }
   | { status: "timedOut"; command: string }
-  | { status: "failed"; code: number | null; command: string };
+  | { status: "failed"; code: number | null; command: string }
+  /** 只在升级时出现：这里没法升级。command：请用户在终端里运行的命令（pnpm、bun 等装的）；为空时是随桌面版一起装的，要在桌面版里更新。 */
+  | { status: "manual"; command: string | null };
 
 /** 安装过程中的一行输出（Rust 发来的 tool-install 事件）。 */
 export interface InstallLine {
@@ -248,6 +252,39 @@ export const installTool = (kind: ToolKind, mirror: boolean) =>
     Object.assign(previewTool(kind), { installed: true, version: "1.0.0", binaryPath: `~/.local/bin/${kind}` } satisfies Partial<ToolOverview>);
     return { status: "installed", version: "1.0.0", binaryPath: `~/.local/bin/${kind}`, pathHint: "~/.local/bin" };
   }, { kind, mirror });
+
+/** 预览时各工具的最新版本（Claude Code 演示有新版本）。 */
+const previewLatest = (kind: ToolKind) => (kind === "claudeCode" ? "2.1.301" : "1.0.0");
+
+/** 工具在 npm 上的最新版本。latest 为空：查不到（例如断网）。 */
+export interface ToolLatest {
+  kind: ToolKind;
+  latest: string | null;
+  /** 最新版比本机装的新。 */
+  updateAvailable: boolean;
+  /** 本机装的就是最新版（查到的比本机的旧时——例如镜像落后——两个都是 false）。 */
+  upToDate: boolean;
+}
+
+/** 查已安装工具的最新版本（同时查，每个最多等 10 秒）。 */
+export const toolVersions = (tools: { kind: ToolKind; version: string }[]) =>
+  call<ToolLatest[]>(
+    "tool_versions",
+    () => tools.map(({ kind, version }) => ({ kind, latest: previewLatest(kind), updateAvailable: version !== previewLatest(kind), upToDate: version === previewLatest(kind) })),
+    { tools },
+  );
+
+/**
+ * 升级工具（按工具是怎么装的选办法），输出同样是 tool-install 事件。version：要升到的版本（查到的最新版；
+ * npm 装这个版本，不用 latest，免得镜像落后时装回旧版）。预览时 2 秒后当作升好了。
+ */
+export const upgradeTool = (kind: ToolKind, mirror: boolean, version: string | null) =>
+  call<InstallOutcome>("upgrade_tool", async () => {
+    await pause(2000);
+    const next = version ?? previewLatest(kind);
+    Object.assign(previewTool(kind), { version: next } satisfies Partial<ToolOverview>);
+    return { status: "installed", version: next, binaryPath: previewTool(kind).binaryPath, pathHint: null };
+  }, { kind, mirror, version });
 
 export const detectSite = (url: string) =>
   call<SiteInfo>("detect_site", () => {
@@ -344,6 +381,7 @@ export const setupPlan = (siteId: string) =>
       { kind: "geminiCli", recommendedGroup: "gemini", matched: true, recommendedModel: null },
       { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
       { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },
+      { kind: "deepseekHarness", recommendedGroup: "default", matched: false, recommendedModel: null },
     ],
   }), { siteId });
 

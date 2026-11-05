@@ -226,6 +226,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                         {testText(t, run.outcome.test)}
                       </p>
                       {kind === "geminiCli" && <p className="mt-1 text-xs text-warning">{t("tools.geminiTrust")}</p>}
+                      {kind === "deepseekHarness" && <p className="mt-1 text-xs text-muted-foreground">{t("tools.dshNote")}</p>}
                     </>
                   )}
                   {run?.status === "failed" && <p className="text-sm text-danger">{errorText(t, run.error)}</p>}

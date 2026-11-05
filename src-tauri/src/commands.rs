@@ -1,6 +1,6 @@
 //! 前端可以调用的命令。参数名在前端用驼峰写法（例如 flowId）。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -16,6 +16,7 @@ use crate::tickets::{
     ImageUpload, NewTicket, TicketDetail, TicketError, TicketList, TicketSession, Tickets,
 };
 use crate::tools::ToolKind;
+use crate::upgrade::{self, ToolLatest};
 use crate::{paths, tools};
 
 #[derive(Debug, Serialize)]
@@ -50,6 +51,8 @@ impl From<ConfigError> for CommandError {
             ConfigError::InvalidFile(path) => ("configInvalid", Some(path)),
             ConfigError::Io(message) => ("configWrite", Some(message)),
             ConfigError::NotConfigured => ("notConfigured", None),
+            ConfigError::Unsupported(what) => ("configUnsupported", Some(what)),
+            ConfigError::Busy => ("configBusy", None),
             ConfigError::Test(TestResult::NoFamilyModels { .. }) => ("noFamilyModels", None),
             ConfigError::Test(TestResult::BadKey { message }) => ("badKey", message),
             ConfigError::Test(TestResult::Failed { message }) => ("probeFailed", message),
@@ -298,6 +301,69 @@ pub async fn install_tool(
         })?;
     refresh_tray(&app);
     Ok(outcome)
+}
+
+/// 升级工具（按工具是怎么装的选办法）。`version`：要升到的版本（界面上显示的最新版）。输出同样通过
+/// `tool-install` 事件发给界面。
+#[tauri::command]
+pub async fn upgrade_tool(
+    app: AppHandle,
+    installer: State<'_, Installer>,
+    kind: ToolKind,
+    mirror: bool,
+    version: Option<String>,
+) -> CommandResult<InstallOutcome> {
+    let outcome = installer
+        .upgrade(&app, kind, mirror, version.as_deref())
+        .await
+        .map_err(|_| CommandError {
+            code: "installBusy".to_string(),
+            message: None,
+        })?;
+    refresh_tray(&app);
+    Ok(outcome)
+}
+
+/// 界面上检测到的一个工具和它的版本。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolVersionQuery {
+    kind: ToolKind,
+    version: Option<String>,
+}
+
+/// 各工具 npm 上的最新版本，和本机的版本比较（同时查，每个最多等 10 秒）。
+#[tauri::command]
+pub async fn tool_versions(tools: Vec<ToolVersionQuery>) -> Vec<ToolLatest> {
+    let http = Http::new();
+    let tasks: Vec<_> = tools
+        .into_iter()
+        .map(|query| {
+            let http = http.clone();
+            tauri::async_runtime::spawn(async move {
+                let latest = upgrade::latest(&http, query.kind, query.version.as_deref()).await;
+                let compare = |check: fn(&str, &str) -> bool| {
+                    matches!(
+                        (&latest, &query.version),
+                        (Some(latest), Some(local)) if check(latest, local)
+                    )
+                };
+                ToolLatest {
+                    kind: query.kind,
+                    update_available: compare(upgrade::is_newer),
+                    up_to_date: compare(upgrade::same_version),
+                    latest,
+                }
+            })
+        })
+        .collect();
+    let mut results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        if let Ok(result) = task.await {
+            results.push(result);
+        }
+    }
+    results
 }
 
 #[derive(Debug, Serialize)]

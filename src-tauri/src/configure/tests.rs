@@ -576,7 +576,8 @@ async fn mount_more_tools(server: &MockServer) {
             { "id": 1, "name": "Claude", "platform": "anthropic", "rate_multiplier": 1 },
             { "id": 2, "name": "Codex", "platform": "openai", "rate_multiplier": 1 },
             { "id": 3, "name": "Gemini", "platform": "gemini", "rate_multiplier": 1 },
-            { "id": 4, "name": "Grok", "platform": "grok", "rate_multiplier": 1 }
+            { "id": 4, "name": "Grok", "platform": "grok", "rate_multiplier": 1 },
+            { "id": 5, "name": "DeepSeek", "platform": "deepseek", "rate_multiplier": 1 }
         ])))
         .mount(server)
         .await;
@@ -608,6 +609,12 @@ async fn mount_more_tools(server: &MockServer) {
             1,
             "sk-opencode",
             vec!["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+        ),
+        (
+            "TransitLink DeepSeek Harness",
+            5,
+            "sk-dsh",
+            vec!["deepseek-v4-flash", "deepseek-v4", "claude-sonnet-5-5"],
         ),
     ] {
         Mock::given(method("POST"))
@@ -736,6 +743,48 @@ async fn configures_and_restores_gemini_grok_and_opencode() {
         .await
         .unwrap();
     assert!(!opencode.exists());
+
+    // DeepSeek Harness：web、desktop 配置档写服务商和默认模型，Key 放 .credentials.yaml；
+    // DeepSeek 模型走 OpenAI 兼容接口，只列 DeepSeek 模型。
+    let outcome = apply(ToolKind::DeepseekHarness, "5").await.unwrap();
+    assert_eq!(outcome.model.as_deref(), Some("deepseek-v4"));
+    let dsh_home = fixture.home.join(".dsh");
+    let web = std::fs::read_to_string(dsh_home.join("profiles/web/cordis.patch.yml")).unwrap();
+    assert!(web.contains("api: openai-completions"));
+    assert!(web.contains("thinkingFormat: deepseek"));
+    assert!(web.contains("deepseek-v4-flash"));
+    assert!(!web.contains("claude-sonnet-5-5"));
+    assert!(dsh_home.join("profiles/desktop/cordis.patch.yml").is_file());
+    let credentials = std::fs::read_to_string(dsh_home.join(".credentials.yaml")).unwrap();
+    assert!(credentials.contains("TRANSITLINK_API_KEY: sk-dsh"));
+    assert_eq!(
+        overview(ToolKind::DeepseekHarness, &fixture).state,
+        ConfigState::Configured
+    );
+    let choices = fixture
+        .configurator
+        .models(ToolKind::DeepseekHarness)
+        .await
+        .unwrap();
+    assert!(choices.iter().all(|id| id.contains("deepseek")));
+    fixture
+        .configurator
+        .set_model(ToolKind::DeepseekHarness, Some("deepseek-v4-flash"))
+        .await
+        .unwrap();
+    assert_eq!(
+        overview(ToolKind::DeepseekHarness, &fixture)
+            .current_model
+            .as_deref(),
+        Some("deepseek-v4-flash")
+    );
+    fixture
+        .configurator
+        .restore(ToolKind::DeepseekHarness)
+        .await
+        .unwrap();
+    assert!(!dsh_home.join("profiles/web/cordis.patch.yml").exists());
+    assert!(!dsh_home.join(".credentials.yaml").exists());
 }
 
 #[test]

@@ -63,7 +63,7 @@ pub fn is_anthropic(model: &str) -> bool {
 
 /// 模型的上下文和输出上限（OpenCode 要求两个都写）。按模型名粗略判断，宁小勿大：
 /// 输出上限超过模型本身的上限会被拒绝，上下文写小了只是早一点压缩对话。
-fn limits(model: &str) -> (u64, u64) {
+pub(crate) fn limits(model: &str) -> (u64, u64) {
     let id = model.to_ascii_lowercase();
     if id.contains("claude") {
         (200_000, 32_000)

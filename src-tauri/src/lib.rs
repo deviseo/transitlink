@@ -19,6 +19,7 @@ mod tickets;
 mod tools;
 #[cfg(desktop)]
 mod tray;
+mod upgrade;
 #[cfg(desktop)]
 mod webauth;
 
@@ -106,6 +107,8 @@ pub fn run() {
             commands::app_info,
             commands::detect_tools,
             commands::install_tool,
+            commands::upgrade_tool,
+            commands::tool_versions,
             commands::detect_site,
             commands::login_site,
             commands::submit_login_code,

@@ -47,6 +47,7 @@ http = "1"
 psl = "2.1.246"
 # 改 Gemini CLI、OpenCode 允许注释的 JSON 配置时保留注释和格式。
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
+serde_yaml = "0.9"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -62,6 +63,13 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+
+[target.'cfg(unix)'.dependencies]
+# 看 DeepSeek Harness 的写锁是不是崩溃残留（记下的进程还在不在）。
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
