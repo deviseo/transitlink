@@ -673,13 +673,18 @@ impl Tickets {
     }
 
     /// 消息里的一张图片，转成 `data:` 地址给界面显示。格式按内容核对，只认那几种图片。
+    /// `thumb`：要缩略图（TransitHub 1.1.2 起有，几十 KB 的 JPEG；更早的版本不认这个参数，给原图）。
     pub async fn attachment(
         &self,
         accounts: &Accounts,
         site_id: &str,
         attachment_id: &str,
+        thumb: bool,
     ) -> Result<String, TicketError> {
-        let path = format!("tickets/attachments/{}", checked_id(attachment_id)?);
+        let mut path = format!("tickets/attachments/{}", checked_id(attachment_id)?);
+        if thumb {
+            path.push_str("?size=thumb");
+        }
         let bytes = self
             .authorized(accounts, site_id, |http, hub| {
                 Ok(http.get(&hub.url(&path)).timeout(DOWNLOAD_TIMEOUT))
@@ -867,7 +872,9 @@ mod tests {
     use crate::siteconfig::{ConfigSite, ConfigTickets, SiteConfig};
     use crate::sites::{Platform, SiteInfo};
     use crate::store::SiteStore;
-    use wiremock::matchers::{body_json, body_partial_json, header, header_regex, method, path};
+    use wiremock::matchers::{
+        body_json, body_partial_json, header, header_regex, method, path, query_param,
+    };
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
     const CODE: &str = "abcdefghij";
@@ -1506,6 +1513,18 @@ mod tests {
             )
             .mount(&server)
             .await;
+        // 缩略图：同一张图片带 ?size=thumb，TransitHub 给小的 JPEG。
+        Mock::given(method("GET"))
+            .and(path("/api/client/v1/tickets/attachments/a1"))
+            .and(query_param("size", "thumb"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(&b"\xFF\xD8\xFF\xE0thumb"[..]),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
         Mock::given(method("GET"))
             .and(path("/api/client/v1/tickets/attachments/a2"))
             .respond_with(
@@ -1547,13 +1566,26 @@ mod tests {
             TicketError::NotFound
         );
         assert_eq!(
-            tickets.attachment(&accounts, &site, "a1").await.unwrap(),
+            tickets
+                .attachment(&accounts, &site, "a1", false)
+                .await
+                .unwrap(),
             format!("data:image/png;base64,{}", STANDARD.encode(PNG))
+        );
+        assert_eq!(
+            tickets
+                .attachment(&accounts, &site, "a1", true)
+                .await
+                .unwrap(),
+            format!(
+                "data:image/jpeg;base64,{}",
+                STANDARD.encode(b"\xFF\xD8\xFF\xE0thumb")
+            )
         );
         // 只认那几种图片，别的内容不交给界面。
         assert_eq!(
             tickets
-                .attachment(&accounts, &site, "a2")
+                .attachment(&accounts, &site, "a2", false)
                 .await
                 .unwrap_err(),
             TicketError::InvalidImage

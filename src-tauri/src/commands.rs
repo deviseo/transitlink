@@ -665,8 +665,9 @@ pub async fn ticket_attachment(
     tickets: State<'_, Tickets>,
     site_id: String,
     attachment_id: String,
+    thumb: bool,
 ) -> CommandResult<String> {
     Ok(tickets
-        .attachment(&accounts, &site_id, &attachment_id)
+        .attachment(&accounts, &site_id, &attachment_id, thumb)
         .await?)
 }

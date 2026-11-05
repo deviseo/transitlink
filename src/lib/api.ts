@@ -699,13 +699,13 @@ export const closeTicket = (siteId: string, ticketId: string) =>
   }, { siteId, ticketId });
 
 /** 消息里的一张图片（`data:` 地址）。 */
-export const ticketAttachment = (siteId: string, attachmentId: string) =>
+export const ticketAttachment = (siteId: string, attachmentId: string, thumb: boolean) =>
   call<string>("ticket_attachment", async () => {
-    await pause(200);
+    await pause(thumb ? 200 : 900);
     const image = previewTicketImages.get(attachmentId);
     if (!image) previewError("ticketsNotFound");
     return image;
-  }, { siteId, attachmentId });
+  }, { siteId, attachmentId, thumb });
 
 /** 是否在浏览器预览（预览时登录流程用示例数据：密码填 wrong 演示错误，账号含 2fa 演示验证码，验证码 123456）。 */
 export const isPreview = !inDesktop;

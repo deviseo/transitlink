@@ -234,7 +234,7 @@ function ReplyBox({
       if (isCommandError(error) && error.code === "ticketsClosed") onClosedMeanwhile();
     },
   });
-  const ready = (body.trim() !== "" || attachments.images.length > 0) && !send.isPending;
+  const ready = (body.trim() !== "" || attachments.images.length > 0) && !send.isPending && !attachments.busy;
 
   const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();

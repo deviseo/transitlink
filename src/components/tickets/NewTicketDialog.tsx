@@ -29,7 +29,7 @@ export function NewTicketDialog({ site, onClose, onCreated }: { site: SiteView; 
     mutationFn: () => createTicket(site.id, { title, category: chosenCategory, body, contact }, toUploads(attachments.images)),
     onSuccess: onCreated,
   });
-  const ready = title.trim() !== "" && body.trim() !== "" && !create.isPending;
+  const ready = title.trim() !== "" && body.trim() !== "" && !create.isPending && !attachments.busy;
 
   // 提交中不能关掉，免得以为没提交上。
   const close = () => {

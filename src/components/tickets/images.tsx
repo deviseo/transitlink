@@ -5,15 +5,24 @@ import { ImageOff, ImagePlus, LoaderCircle, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { ticketAttachment, type TicketAttachment, type TicketSession } from "../../lib/api";
 import { errorText } from "../../lib/errors";
+import { compressImage } from "../../lib/imageCompress";
 import { IMAGE_TYPES, readImage, ticketKeys, type PickedImage } from "../../lib/tickets";
 
 const megabytes = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+/** 选的图片超过这么大就不处理了（压缩时要把整张图读进内存）。 */
+const MAX_ORIGINAL_BYTES = 50 * 1024 * 1024;
+
+/** 图片在缓存里留多久（同一张图片不会变，看过的再打开不用重新下载）。 */
+const IMAGE_CACHE_MS = 30 * 60 * 1000;
 
 /** 要随消息发出的图片：选文件或在输入框里粘贴截图；按站长给的数量、大小限制和格式检查。 */
 export function useImageAttachments(limits: TicketSession["limits"] | undefined) {
   const { t } = useTranslation();
   const [images, setImages] = useState<PickedImage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // 正在压缩的批数：压缩完之前不能发送，免得漏掉图片。
+  const [busy, setBusy] = useState(0);
   const enabled = limits?.enabled ?? false;
   const max = limits?.maxImages ?? 5;
   const maxBytes = limits?.maxImageBytes ?? 5 * 1024 * 1024;
@@ -21,25 +30,38 @@ export function useImageAttachments(limits: TicketSession["limits"] | undefined)
   const add = async (files: File[]) => {
     if (!enabled || files.length === 0) return;
     const problems: string[] = [];
+    const tooLarge = (file: File) => t("tickets.imageTooLarge", { name: file.name, size: megabytes(maxBytes) });
     const accepted = files.filter((file) => {
       if (!IMAGE_TYPES.includes(file.type)) {
         problems.push(t("tickets.imageInvalid", { name: file.name }));
         return false;
       }
-      if (file.size > maxBytes) {
-        problems.push(t("tickets.imageTooLarge", { name: file.name, size: megabytes(maxBytes) }));
+      if (file.size > MAX_ORIGINAL_BYTES) {
+        problems.push(tooLarge(file));
         return false;
       }
       return true;
     });
     const room = Math.max(0, max - images.length);
     if (accepted.length > room) problems.push(t("tickets.imageTooMany", { max }));
+    setBusy((count) => count + 1);
+    const read: PickedImage[] = [];
     try {
-      const read = await Promise.all(accepted.slice(0, room).map(readImage));
-      setImages((current) => [...current, ...read].slice(0, max));
+      for (const file of accepted.slice(0, room)) {
+        // 大图先缩小、转格式：截图一般从几 MB 变成几百 KB。大小限制按压缩后的算。
+        const small = await compressImage(file);
+        if (small.size > maxBytes) {
+          problems.push(tooLarge(file));
+          continue;
+        }
+        read.push(await readImage(small));
+      }
     } catch {
       problems.push(t("tickets.imageReadFailed"));
+    } finally {
+      setBusy((count) => count - 1);
     }
+    setImages((current) => [...current, ...read].slice(0, max));
     setError(problems.length > 0 ? problems.join(t("common.separator")) : null);
   };
 
@@ -49,6 +71,8 @@ export function useImageAttachments(limits: TicketSession["limits"] | undefined)
     maxBytes,
     images,
     error,
+    /** 还在压缩刚选的图片。 */
+    busy: busy > 0,
     add,
     remove: (key: string) => setImages((current) => current.filter((image) => image.key !== key)),
     clear: () => {
@@ -92,6 +116,12 @@ export function ImageStrip({ attachments, disabled = false }: { attachments: Ima
           <ImagePlus className="h-4 w-4" aria-hidden />
           {t("tickets.addImage", { count: attachments.images.length, max: attachments.max })}
         </Button>
+        {attachments.busy && (
+          <span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            {t("tickets.compressing")}
+          </span>
+        )}
         <input
           ref={input}
           type="file"
@@ -115,24 +145,30 @@ export function ImageStrip({ attachments, disabled = false }: { attachments: Ima
   );
 }
 
+/** 点开看的图片：先显示缩略图（preview），原图下载好后换上。 */
 export interface ViewedImage {
-  src: string;
+  siteId: string;
+  attachmentId: string;
   name: string;
+  preview: string;
 }
 
-/** 消息里的一张图片：缩略图，点开看大图。图片由桌面端取回（要带工单会话），取过的留在缓存里。 */
+/**
+ * 消息里的一张图片：只下载缩略图（几十 KB），点开才下载原图。图片由桌面端取回（要带工单会话），
+ * 取过的留在缓存里。
+ */
 export function AttachmentThumb({ siteId, attachment, onOpen }: { siteId: string; attachment: TicketAttachment; onOpen: (image: ViewedImage) => void }) {
   const { t } = useTranslation();
   const image = useQuery({
-    queryKey: ticketKeys.attachment(siteId, attachment.id),
-    queryFn: () => ticketAttachment(siteId, attachment.id),
+    queryKey: ticketKeys.attachment(siteId, attachment.id, "thumb"),
+    queryFn: () => ticketAttachment(siteId, attachment.id, true),
     staleTime: Infinity,
-    gcTime: 30 * 60 * 1000,
+    gcTime: IMAGE_CACHE_MS,
   });
   return (
     <button
       type="button"
-      onClick={() => image.data && onOpen({ src: image.data, name: attachment.originalName })}
+      onClick={() => image.data && onOpen({ siteId, attachmentId: attachment.id, name: attachment.originalName, preview: image.data })}
       disabled={!image.data}
       title={image.isError ? errorText(t, image.error) : attachment.originalName}
       aria-label={t("tickets.viewImage", { name: attachment.originalName })}
@@ -149,9 +185,16 @@ export function AttachmentThumb({ siteId, attachment, onOpen }: { siteId: string
   );
 }
 
-/** 看大图：点遮罩、关闭按钮或按 Esc 关闭。 */
+/** 看大图：先显示缩略图，原图下载好后换上。点遮罩、关闭按钮或按 Esc 关闭。 */
 export function ImageViewer({ image, onClose }: { image: ViewedImage | null; onClose: () => void }) {
   const { t } = useTranslation();
+  const full = useQuery({
+    queryKey: ticketKeys.attachment(image?.siteId ?? "", image?.attachmentId ?? "", "full"),
+    queryFn: () => ticketAttachment(image?.siteId ?? "", image?.attachmentId ?? "", false),
+    enabled: image !== null,
+    staleTime: Infinity,
+    gcTime: IMAGE_CACHE_MS,
+  });
   useEffect(() => {
     if (!image) return;
     const onKey = (event: KeyboardEvent) => {
@@ -178,7 +221,16 @@ export function ImageViewer({ image, onClose }: { image: ViewedImage | null; onC
       >
         <X className="h-5 w-5" aria-hidden />
       </button>
-      <img src={image.src} alt={image.name} className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl" />
+      <div className="relative flex min-h-0 items-center justify-center">
+        <img src={full.data ?? image.preview} alt={image.name} className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl" />
+        {full.isLoading && (
+          <span role="status" className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/30 text-sm text-white">
+            <LoaderCircle className="mr-2 h-5 w-5 animate-spin" aria-hidden />
+            {t("tickets.loadingFull")}
+          </span>
+        )}
+      </div>
+      {full.isError && <p className="text-xs text-white/80">{errorText(t, full.error)}</p>}
       <p className="max-w-full truncate text-xs text-white/80">{image.name}</p>
     </div>
   );

@@ -12,7 +12,7 @@ export const ticketKeys = {
   list: (siteId: string) => ["tickets", siteId, "list"] as const,
   detail: (siteId: string, ticketId: string) => ["tickets", siteId, "detail", ticketId] as const,
   session: (siteId: string) => ["ticket-session", siteId] as const,
-  attachment: (siteId: string, attachmentId: string) => ["ticket-attachment", siteId, attachmentId] as const,
+  attachment: (siteId: string, attachmentId: string, size: "thumb" | "full") => ["ticket-attachment", siteId, attachmentId, size] as const,
 };
 
 /** 一个站点的工单列表：每 5 分钟刷新一次（窗口回到前台时也刷新，见 useTicketFocusRefresh）。 */
