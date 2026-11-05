@@ -1,6 +1,6 @@
 [package]
 name = "transitlink"
-version = "0.4.0"
+version = "0.5.0"
 description = "TransitLink：中转站用户客户端（登录中转站、管理 Key、一键配置 Claude Code / Codex）"
 authors = ["deviseo"]
 edition = "2024"
