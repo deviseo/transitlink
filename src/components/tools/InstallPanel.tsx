@@ -11,6 +11,34 @@ const NODE_DOWNLOAD = "https://nodejs.org/zh-cn/download";
 
 type Install = ReturnType<typeof useToolInstall>;
 
+/** 安装、升级、卸载各自的说明文字。 */
+const TEXT = {
+  install: {
+    running: "tools.install.running",
+    network: "tools.install.network",
+    timedOut: "tools.install.timedOut",
+    failed: "tools.install.failed",
+    hint: "tools.installHint",
+    hintWindows: "tools.installHintWindows",
+  },
+  upgrade: {
+    running: "tools.upgrade.running",
+    network: "tools.upgrade.network",
+    timedOut: "tools.upgrade.timedOut",
+    failed: "tools.upgrade.failed",
+    hint: "tools.upgrade.hint",
+    hintWindows: "tools.upgrade.hintWindows",
+  },
+  uninstall: {
+    running: "tools.uninstall.running",
+    network: "tools.uninstall.network",
+    timedOut: "tools.uninstall.timedOut",
+    failed: "tools.uninstall.failed",
+    hint: "tools.uninstall.hint",
+    hintWindows: "tools.uninstall.hintWindows",
+  },
+} as const;
+
 /** 一行可以复制的命令。 */
 export function CopyCommand({ command }: { command: string }) {
   const { t } = useTranslation();
@@ -52,7 +80,7 @@ function Running({ install, mode }: { install: Install; mode: InstallAction }) {
     <div className="space-y-2" role="status">
       <p className="flex items-center gap-2 text-sm">
         <LoaderCircle className="h-4 w-4 animate-spin text-brand" aria-hidden />
-        {t(mode === "install" ? "tools.install.running" : "tools.upgrade.running")}
+        {t(TEXT[mode].running)}
       </p>
       {install.lines.length > 0 && <InstallLog lines={install.lines} />}
     </div>
@@ -75,10 +103,7 @@ function StartError({ install }: { install: Install }) {
 function ManualCommand({ mode, command, windows }: { mode: InstallAction; command: string; windows: boolean }) {
   const { t } = useTranslation();
   if (!command) return null;
-  const hint =
-    mode === "install"
-      ? t(windows ? "tools.installHintWindows" : "tools.installHint")
-      : t(windows ? "tools.upgrade.hintWindows" : "tools.upgrade.hint");
+  const hint = t(windows ? TEXT[mode].hintWindows : TEXT[mode].hint);
   return (
     <div className="space-y-1.5">
       <p className="text-xs text-muted-foreground">{hint}</p>
@@ -170,6 +195,21 @@ export function UpgradePanel({ install, windows, toolName }: { install: Install;
   );
 }
 
+/** 卸载：显示输出；完成后说明卸掉了没有；失败时说明原因，给出重试和可以复制到终端的命令。 */
+export function UninstallPanel({ install, windows, toolName }: { install: Install; windows: boolean; toolName: string }) {
+  if (install.running) return <Running install={install} mode="uninstall" />;
+  if (!install.outcome) {
+    return (
+      <div className="space-y-2">
+        <StartError install={install} />
+        <RetryButtons install={install} npm={false} />
+      </div>
+    );
+  }
+  const command = ("command" in install.outcome ? install.outcome.command : null) ?? "";
+  return <Outcome mode="uninstall" install={install} outcome={install.outcome} command={command} npm={false} windows={windows} toolName={toolName} />;
+}
+
 function Outcome({
   mode,
   install,
@@ -229,6 +269,29 @@ function Outcome({
         </div>
       );
     }
+    case "uninstalled":
+      return (
+        <div className="space-y-1.5" role="status">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-success">
+            <CircleCheck className="h-4 w-4 shrink-0" aria-hidden />
+            {t("tools.uninstall.done", { tool: toolName })}
+          </p>
+          {outcome.remaining && <p className="break-all text-xs text-muted-foreground">{t("tools.uninstall.remaining", { path: outcome.remaining })}</p>}
+          {outcome.leftovers.length > 0 && (
+            <p className="break-all text-xs text-warning">{t("tools.uninstall.leftovers", { files: outcome.leftovers.join(t("common.separator")) })}</p>
+          )}
+        </div>
+      );
+    case "stillInstalled":
+      return (
+        <div className="space-y-3">
+          {problem(t("tools.uninstall.stillThere", { path: outcome.path }))}
+          {install.lines.length > 0 && <InstallLog lines={install.lines} />}
+          {outcome.command && <ManualCommand mode="uninstall" command={outcome.command} windows={windows} />}
+        </div>
+      );
+    case "changed":
+      return problem(t("tools.uninstall.changed"));
     case "manual":
       return outcome.command ? (
         <div className="space-y-1.5" role="status">
@@ -270,10 +333,7 @@ function Outcome({
     case "network":
     case "timedOut":
     case "failed": {
-      const keys =
-        mode === "install"
-          ? { network: "tools.install.network", timedOut: "tools.install.timedOut", failed: "tools.install.failed" }
-          : { network: "tools.upgrade.network", timedOut: "tools.upgrade.timedOut", failed: "tools.upgrade.failed" };
+      const keys = TEXT[mode];
       return (
         <div className="space-y-3">
           {problem(outcome.status === "failed" ? t(keys.failed, { code: outcome.code ?? "?" }) : t(keys[outcome.status]))}

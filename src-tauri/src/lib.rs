@@ -19,6 +19,7 @@ mod tickets;
 mod tools;
 #[cfg(desktop)]
 mod tray;
+mod uninstall;
 mod upgrade;
 #[cfg(desktop)]
 mod webauth;
@@ -109,6 +110,8 @@ pub fn run() {
             commands::install_tool,
             commands::upgrade_tool,
             commands::tool_versions,
+            commands::uninstall_plan,
+            commands::uninstall_tool,
             commands::detect_site,
             commands::login_site,
             commands::submit_login_code,

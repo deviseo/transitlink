@@ -89,7 +89,8 @@ export interface SiteInfo {
 export interface SiteConfig {
   site: { name: string; baseUrl: string; platform: string };
   brand: { name: string; logoUrl: string; color: string; welcome: string };
-  recommend: { claudeCode: { group: string; model: string }; codex: { group: string; model: string } };
+  /** 各工具的推荐分组和模型（旧版 TransitHub 只有 claudeCode、codex，其余按没指定处理）。 */
+  recommend: Partial<Record<ToolKind, { group: string; model: string }>>;
   notice: { content: string; updatedAt: string | null };
   support: { type: string; label: string; value: string }[];
   /** 对客户端本身的要求：minVersion 是最低版本，空表示不限制（旧版本保存的配置里没有这一项）。 */
@@ -237,7 +238,26 @@ export type InstallOutcome =
   | { status: "timedOut"; command: string }
   | { status: "failed"; code: number | null; command: string }
   /** 只在升级时出现：这里没法升级。command：请用户在终端里运行的命令（pnpm、bun 等装的）；为空时是随桌面版一起装的，要在桌面版里更新。 */
-  | { status: "manual"; command: string | null };
+  | { status: "manual"; command: string | null }
+  /** 卸载好了。remaining：别处还有一份时它的位置；leftovers：正在使用、没能删掉的文件（已经挪开）。 */
+  | { status: "uninstalled"; remaining: string | null; leftovers: string[] }
+  /** 卸载命令运行完了，但这个命令还在。command：可以在终端里自己运行的卸载命令。 */
+  | { status: "stillInstalled"; path: string; command: string | null }
+  /** 确认之后安装情况变了（例如刚升级过），要重新确认。 */
+  | { status: "changed" };
+
+/** 卸载办法：运行包管理器的命令、删除官方安装脚本装的几个文件，或者请用户自己卸载。 */
+export type UninstallPlan =
+  | { kind: "command"; program: string; args: string[]; display: string; npm: boolean; env: [string, string][] }
+  | { kind: "files"; program: string; files: string[] }
+  /** command：请用户在终端里运行的命令；为空时请用原来的办法卸载（desktop：随桌面版装的）。 */
+  | { kind: "manual"; command: string | null; desktop: boolean };
+
+/** 卸载预览：检测到的命令位置和卸载办法。确认时原样传回去核对。 */
+export interface UninstallPreview {
+  binary: string;
+  plan: UninstallPlan;
+}
 
 /** 安装过程中的一行输出（Rust 发来的 tool-install 事件）。 */
 export interface InstallLine {
@@ -252,6 +272,32 @@ export const installTool = (kind: ToolKind, mirror: boolean) =>
     Object.assign(previewTool(kind), { installed: true, version: "1.0.0", binaryPath: `~/.local/bin/${kind}` } satisfies Partial<ToolOverview>);
     return { status: "installed", version: "1.0.0", binaryPath: `~/.local/bin/${kind}`, pathHint: "~/.local/bin" };
   }, { kind, mirror });
+
+const previewPackages: Record<ToolKind, string> = {
+  claudeCode: "@anthropic-ai/claude-code",
+  codex: "@openai/codex",
+  geminiCli: "@google/gemini-cli",
+  grokBuild: "@xai-official/grok",
+  opencode: "opencode-ai",
+  deepseekHarness: "@deepseek-ai/dsh",
+};
+
+/** 卸载前的预览（工具没装时为空）。预览时当作 npm 装的。 */
+export const uninstallPlan = (kind: ToolKind) =>
+  call<UninstallPreview | null>("uninstall_plan", () => {
+    const tool = previewTool(kind);
+    if (!tool.installed || !tool.binaryPath) return null;
+    const args = ["uninstall", "-g", "--prefix", "/usr/local", previewPackages[kind]];
+    return { binary: tool.binaryPath, plan: { kind: "command", program: "/usr/local/bin/npm", args, display: `npm ${args.join(" ")}`, npm: true, env: [] } };
+  }, { kind });
+
+/** 卸载工具（只卸程序，配置留着）。confirmed：用户确认过的预览。预览时 1.5 秒后当作卸好了。 */
+export const uninstallTool = (kind: ToolKind, confirmed: UninstallPreview) =>
+  call<InstallOutcome>("uninstall_tool", async () => {
+    await pause(1500);
+    Object.assign(previewTool(kind), { installed: false, version: null, binaryPath: null } satisfies Partial<ToolOverview>);
+    return { status: "uninstalled", remaining: null, leftovers: [] };
+  }, { kind, confirmed });
 
 /** 预览时各工具的最新版本（Claude Code 演示有新版本）。 */
 const previewLatest = (kind: ToolKind) => (kind === "claudeCode" ? "2.1.301" : "1.0.0");
@@ -377,7 +423,7 @@ export const setupPlan = (siteId: string) =>
     balanceUsd: 12.34,
     tools: [
       { kind: "claudeCode", recommendedGroup: "claude", matched: true, recommendedModel: null },
-      { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex.model || null },
+      { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex?.model || null },
       { kind: "geminiCli", recommendedGroup: "gemini", matched: true, recommendedModel: null },
       { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
       { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },

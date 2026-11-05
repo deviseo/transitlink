@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, ArrowUpCircle, CircleAlert, CircleCheck, CircleX, LoaderCircle, RefreshCw, RotateCcw, Sparkles, Zap } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
-import { InstallPanel, UpgradePanel } from "../components/tools/InstallPanel";
+import { InstallPanel, UninstallPanel, UpgradePanel } from "../components/tools/InstallPanel";
+import { UninstallConfirm } from "../components/tools/UninstallConfirm";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -74,6 +75,9 @@ function ToolCard({
   const windows = platform === "windows";
   const upgrading = install.action === "upgrade";
   const showInstall = !tool.installed || (install.action === "install" && install.outcome?.status === "installed");
+  // 卸载前的确认（先看要运行的命令或要删的文件）。工具不见了或者换了位置时关掉。
+  const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  useEffect(() => setConfirmingUninstall(false), [tool.installed, tool.binaryPath]);
   return (
     <Card className="flex flex-col">
       <div className="flex items-start justify-between gap-3">
@@ -99,11 +103,20 @@ function ToolCard({
           <VersionRow
             version={tool.version}
             latest={latest}
-            busy={install.running || upgrading}
-            onUpgrade={() => void install.upgrade(tool.version, latest?.latest ?? null)}
+            busy={install.running || upgrading || confirmingUninstall}
+            onUpgrade={() => {
+              setConfirmingUninstall(false);
+              void install.upgrade(tool.version, latest?.latest ?? null);
+            }}
           />
         )}
-        {tool.installed && <InfoRow label={t("tools.binary")} value={tool.binaryPath} mono />}
+        {tool.installed && (
+          <BinaryRow
+            path={tool.binaryPath}
+            busy={install.running || confirmingUninstall}
+            onUninstall={() => setConfirmingUninstall(true)}
+          />
+        )}
         <InfoRow label={t("tools.config")} value={tool.configExists ? tool.configPath : `${tool.configPath} ${t("tools.configMissing")}`} mono />
       </dl>
 
@@ -115,6 +128,23 @@ function ToolCard({
       {upgrading && (
         <div className="mt-4">
           <UpgradePanel install={install} windows={windows} toolName={t(`tools.${tool.kind}`)} />
+        </div>
+      )}
+      {confirmingUninstall && tool.installed && !install.running && (
+        <div className="mt-4">
+          <UninstallConfirm
+            tool={tool}
+            onCancel={() => setConfirmingUninstall(false)}
+            onConfirm={(preview) => {
+              setConfirmingUninstall(false);
+              void install.uninstall(preview);
+            }}
+          />
+        </div>
+      )}
+      {install.action === "uninstall" && (
+        <div className="mt-4">
+          <UninstallPanel install={install} windows={windows} toolName={t(`tools.${tool.kind}`)} />
         </div>
       )}
 
@@ -241,6 +271,24 @@ function ConfigSection({ tool, hasSites, onSetup }: { tool: ToolOverview; hasSit
           {!hasSites && <span className="text-xs text-muted-foreground">{t("tools.needSite")}</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 命令位置和「卸载」（只卸程序，配置留着）。 */
+function BinaryRow({ path, busy, onUninstall }: { path: string | null; busy: boolean; onUninstall: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex gap-3">
+      <dt className="w-20 shrink-0 text-muted-foreground">{t("tools.binary")}</dt>
+      <dd className="min-w-0 flex-1 font-mono text-xs leading-5">
+        <span className="break-all">{path || "—"}</span>
+        {!busy && (
+          <button type="button" onClick={onUninstall} className="ml-2 font-sans text-xs text-muted-foreground hover:text-danger hover:underline">
+            {t("tools.uninstall.button")}
+          </button>
+        )}
+      </dd>
     </div>
   );
 }

@@ -22,6 +22,7 @@
 - [x] 检测本机的编程工具（Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、DeepSeek Harness）：安装位置、版本、配置文件位置
 - [x] 一键安装工具：运行官方的安装命令（Gemini CLI、DeepSeek Harness 用 npm，需要 Node.js），显示安装过程；跟随系统代理，npm 可以换国内镜像；装好后终端里还找不到命令时，提示怎么加到 PATH
 - [x] 检查新版本、一键升级：按工具是怎么装的选升级办法——Homebrew 装的用 `brew upgrade`，npm 装的用同一处的 npm 装查到的那个版本（国内镜像落后时不会装回旧版），官方脚本装的用工具自带的升级命令（Codex 重新运行官方安装）；pnpm、bun、Yarn、Volta 装的给出对应的命令请你在终端里运行，DeepSeek Harness 桌面版带的命令请在桌面版里更新
+- [x] 一键卸载：只卸载程序，配置文件和使用记录都留着。只用当初装它的那个包管理器卸载（Homebrew 只卸认得的包，npm 要核对全局目录里确实装着这个包），官方脚本装的只删命令和它指向的程序，不删目录；卸载前先给你看要运行的命令或要删的文件，认不出是怎么装的就不动，告诉你怎么自己卸
 - [x] 注册 `transitlink://` 专属链接协议，单实例运行
 - [x] 接入站点：输入网址后自动识别 new-api 和 sub2api，可以同时接入多个站点
 - [x] 账号密码登录 new-api（新版和旧版）和 sub2api，支持两步验证；显示余额
@@ -51,7 +52,7 @@
 
 ## 站长：给用户发专属链接
 
-在 [TransitHub](https://github.com/deviseo/transit-hub) 的「客户端」页面设置品牌、推荐的分组和模型、公告和客服，然后把生成的 `transitlink://connect?config=…` 链接发给用户。用户点链接（或者把链接粘贴到「接入站点」的网址栏）就能接入，登录后自动打开一键配置。
+在 [TransitHub](https://github.com/deviseo/transit-hub) 的「客户端」页面设置品牌、每个工具推荐的分组和模型（Claude Code、Codex 以外的工具要 TransitHub 1.2.0 或更高版本）、公告和客服，然后把生成的 `transitlink://connect?config=…` 链接发给用户。用户点链接（或者把链接粘贴到「接入站点」的网址栏）就能接入，登录后自动打开一键配置。
 
 - 链接里是 TransitHub 的公开配置接口 `…/api/client/v1/sites/<代码>`，用户的电脑要能访问它；TransitHub 只需要对外开放 `/api/client/` 开头的接口。
 - 配置只接受 https 地址；配置里的站点地址必须和用户登录的站点一致，别的链接改不了这个站点的品牌。
@@ -101,7 +102,7 @@ src/                     React 前端
   components/ui/         通用组件（按钮、卡片、弹窗、输入框）
   components/layout/     侧边栏、站点切换器、切换站点时的确认
   components/sites/      接入站点、站点卡片、Key 列表
-  components/tools/      一键配置窗口、安装和升级面板
+  components/tools/      一键配置窗口，安装、升级和卸载面板
   components/tickets/    工单：新建窗口、图片
   pages/                 概览、密钥、工具、工单、设置、管理站点
   i18n/                  中英文文案
@@ -117,6 +118,7 @@ src-tauri/               Rust 核心
   src/configure/         一键配置：Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、DeepSeek Harness 的配置读写，备份、还原，连通测试
   src/install.rs         一键安装、升级：运行官方安装命令或 npm，输出发给界面，跟随系统代理
   src/upgrade.rs         工具升级：查 npm 上的最新版本，按工具是怎么装的选升级命令
+  src/uninstall.rs       工具卸载：按工具是怎么装的选卸载办法，只卸程序
   src/tools.rs           本机编程工具检测
   src/tray.rs            托盘菜单：切换站点、打开、退出
   src/webauth.rs         开了人机验证的站点：登录窗口
@@ -128,4 +130,4 @@ src-tauri/               Rust 核心
 
 ## 致谢
 
-决定 Claude Code、Codex 连到哪里、用什么鉴权的配置项清单，参考了 [cc-switch](https://github.com/farion1231/cc-switch)（MIT 许可）的整理；DeepSeek Harness 的配置写法和各工具的升级办法也参考了 cc-switch。
+决定 Claude Code、Codex 连到哪里、用什么鉴权的配置项清单，参考了 [cc-switch](https://github.com/farion1231/cc-switch)（MIT 许可）的整理；DeepSeek Harness 的配置写法、各工具的升级和卸载办法也参考了 cc-switch。

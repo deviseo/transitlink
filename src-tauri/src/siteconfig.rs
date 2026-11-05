@@ -51,11 +51,31 @@ pub struct ToolRecommend {
     pub model: String,
 }
 
+/// 各工具的推荐设置。TransitHub 1.2 起才有后四个工具，旧版本的配置里没有（按没指定处理）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConfigRecommend {
     pub claude_code: ToolRecommend,
     pub codex: ToolRecommend,
+    pub gemini_cli: ToolRecommend,
+    pub grok_build: ToolRecommend,
+    pub opencode: ToolRecommend,
+    pub deepseek_harness: ToolRecommend,
+}
+
+impl ConfigRecommend {
+    /// 某个工具的推荐设置。
+    pub fn tool(&self, kind: crate::tools::ToolKind) -> &ToolRecommend {
+        use crate::tools::ToolKind;
+        match kind {
+            ToolKind::ClaudeCode => &self.claude_code,
+            ToolKind::Codex => &self.codex,
+            ToolKind::GeminiCli => &self.gemini_cli,
+            ToolKind::GrokBuild => &self.grok_build,
+            ToolKind::OpenCode => &self.opencode,
+            ToolKind::DeepseekHarness => &self.deepseek_harness,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -165,6 +185,10 @@ fn sanitize(mut config: SiteConfig, config_url: &url::Url) -> Result<SiteConfig,
     for tool in [
         &mut config.recommend.claude_code,
         &mut config.recommend.codex,
+        &mut config.recommend.gemini_cli,
+        &mut config.recommend.grok_build,
+        &mut config.recommend.opencode,
+        &mut config.recommend.deepseek_harness,
     ] {
         clip(&mut tool.group, 100);
         clip(&mut tool.model, 100);
@@ -259,7 +283,11 @@ mod tests {
                 "version": 1,
                 "site": { "name": "示例中转", "baseUrl": "https://relay.example.com/", "platform": "newapi" },
                 "brand": { "name": "极速中转", "logoUrl": "/api/client/v1/sites/abcdefghij/logo", "color": "#2563EB", "welcome": "欢迎" },
-                "recommend": { "claudeCode": { "group": "claude", "model": "" }, "codex": { "group": "codex", "model": "gpt-6.1-sol" } },
+                "recommend": {
+                    "claudeCode": { "group": "claude", "model": "" },
+                    "codex": { "group": "codex", "model": "gpt-6.1-sol" },
+                    "deepseekHarness": { "group": " deepseek ", "model": "deepseek-v4" }
+                },
                 "notice": { "content": "周六维护", "updatedAt": "2026-11-04T08:00:00Z" },
                 "support": [{ "type": "telegram", "label": "TG", "value": "https://t.me/x" }, { "type": "qq", "label": "空", "value": " " }],
                 "client": { "minVersion": "v0.2.0" },
@@ -297,6 +325,18 @@ mod tests {
             "relative logos resolve against the config address"
         );
         assert_eq!(config.recommend.codex.model, "gpt-6.1-sol");
+        let dsh = config
+            .recommend
+            .tool(crate::tools::ToolKind::DeepseekHarness);
+        assert_eq!(
+            (dsh.group.as_str(), dsh.model.as_str()),
+            ("deepseek", "deepseek-v4")
+        );
+        // 旧版 TransitHub 没有的工具：当作没指定。
+        assert_eq!(
+            config.recommend.tool(crate::tools::ToolKind::GrokBuild),
+            &ToolRecommend::default()
+        );
         assert_eq!(config.support.len(), 1);
         assert_eq!(config.client.min_version, "0.2.0");
         assert!(config.tickets.enabled);

@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import { installTool, toolVersions, upgradeTool, type InstallLine, type InstallOutcome, type ToolKind, type ToolStatus } from "./api";
+import { installTool, toolVersions, uninstallTool, upgradeTool, type InstallLine, type InstallOutcome, type ToolKind, type ToolStatus, type UninstallPreview } from "./api";
 import { inDesktop } from "./tauri";
 
 /** 输出最多留这么多行。 */
 const MAX_LINES = 200;
 
-export type InstallAction = "install" | "upgrade";
+export type InstallAction = "install" | "upgrade" | "uninstall";
 
-/** 一键安装或升级一个工具：过程中的输出、结果，结束后重新检测工具。 */
+/** 一键安装、升级或卸载一个工具：过程中的输出、结果，结束后重新检测工具。 */
 export function useToolInstall(kind: ToolKind) {
   const queryClient = useQueryClient();
   const [lines, setLines] = useState<string[]>([]);
@@ -20,6 +20,8 @@ export function useToolInstall(kind: ToolKind) {
   /** 升级前的版本（升级后比较版本变了没有）和要升到的版本。 */
   const [from, setFrom] = useState<string | null>(null);
   const [to, setTo] = useState<string | null>(null);
+  /** 用户确认过的卸载预览（重试时再用）。 */
+  const [confirmed, setConfirmed] = useState<UninstallPreview | null>(null);
 
   useEffect(() => {
     if (!inDesktop) return;
@@ -29,14 +31,20 @@ export function useToolInstall(kind: ToolKind) {
     return () => void stop.then((unlisten) => unlisten());
   }, [kind]);
 
-  const run = async (next: InstallAction, mirror: boolean, target: string | null) => {
+  const run = async (next: InstallAction, mirror: boolean, target: string | null, preview: UninstallPreview | null) => {
     setAction(next);
     setRunning(true);
     setLines([]);
     setOutcome(null);
     setError(null);
     try {
-      setOutcome(await (next === "install" ? installTool(kind, mirror) : upgradeTool(kind, mirror, target)));
+      setOutcome(
+        await (next === "install"
+          ? installTool(kind, mirror)
+          : next === "upgrade"
+            ? upgradeTool(kind, mirror, target)
+            : uninstallTool(kind, preview as UninstallPreview)),
+      );
     } catch (caught) {
       setError(caught);
     } finally {
@@ -54,15 +62,20 @@ export function useToolInstall(kind: ToolKind) {
     action,
     from,
     /** 一键安装。mirror：npm 用国内镜像。 */
-    start: (mirror = false) => run("install", mirror, null),
+    start: (mirror = false) => run("install", mirror, null, null),
     /** 升级。current：现在的版本；target：要升到的版本（查到的最新版）。 */
     upgrade: (current: string | null, target: string | null) => {
       setFrom(current);
       setTo(target);
-      return run("upgrade", false, target);
+      return run("upgrade", false, target, null);
+    },
+    /** 卸载（只卸程序）。preview：用户确认过的预览。 */
+    uninstall: (preview: UninstallPreview) => {
+      setConfirmed(preview);
+      return run("uninstall", false, null, preview);
     },
     /** 再做一次上次的操作。 */
-    retry: (mirror = false) => run(action ?? "install", mirror, to),
+    retry: (mirror = false) => run(action ?? "install", mirror, to, confirmed),
   };
 }
 

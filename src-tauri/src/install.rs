@@ -8,7 +8,7 @@
 //! - 同一时间只装一个，最多等 15 分钟。
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::tools::{self, ToolKind};
+use crate::uninstall;
 
 const TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// npm 国内镜像。
@@ -159,6 +160,82 @@ pub enum InstallOutcome {
     /// 这里没法升级：`command` 是请用户在终端里运行的命令（pnpm、bun 等装的）；为空时是桌面版带的，
     /// 请在桌面版里更新。
     Manual { command: Option<String> },
+    /// 卸载好了。`remaining`：别处还有一份（终端里还能运行）时它的位置。
+    /// `leftovers`：挪开了但删不掉的文件（例如 Windows 上正在运行的程序），可以以后手动删。
+    Uninstalled {
+        remaining: Option<String>,
+        leftovers: Vec<String>,
+    },
+    /// 卸载命令运行完了，但这个命令还在。
+    /// `command`：可以在终端里自己运行的卸载命令。
+    StillInstalled {
+        path: String,
+        command: Option<String>,
+    },
+    /// 确认之后安装情况变了（例如刚升级过）：请重新看一次再确认。
+    Changed,
+}
+
+/// 命令运行成功以后做什么。
+enum After {
+    /// 重新检测（安装、升级）。
+    Detect,
+    /// 确认这个命令已经没了（卸载）。
+    /// `command`：卸载命令（还没卸掉时给用户自己运行）。
+    Removed { binary: PathBuf, command: String },
+}
+
+/// 要运行的一个命令。
+struct Job {
+    command: Command,
+    /// 给界面显示的命令。
+    display: String,
+    /// 是 npm 命令（失败时按 npm 的错误分析）。
+    npm: bool,
+    after: After,
+}
+
+/// 命令所在的目录放在 PATH 最前面：`#!/usr/bin/env node` 要找到同一处的 node，npm 也先找同一处的。
+fn with_dir_first(dir: Option<&Path>, search: OsString) -> OsString {
+    let mut dirs: Vec<PathBuf> = dir.map(Path::to_path_buf).into_iter().collect();
+    dirs.extend(std::env::split_paths(&search));
+    std::env::join_paths(dirs).unwrap_or(search)
+}
+
+/// 卸载预览：重新检测工具，按它是怎么装的选卸载办法。没装时返回 None。要运行 `--version`，
+/// 在后台线程里调用。
+pub fn uninstall_preview(kind: ToolKind) -> Option<uninstall::Preview> {
+    let home = crate::paths::home_dir();
+    let status = tools::detect_one(kind);
+    let binary = PathBuf::from(status.binary_path?);
+    let search = with_dir_first(
+        binary.parent(),
+        tools::search_path(&home, std::env::var_os("PATH")),
+    );
+    let plan = uninstall::plan(kind, &binary, status.version.as_deref(), &search, &home);
+    Some(uninstall::Preview {
+        binary: binary.display().to_string(),
+        plan,
+    })
+}
+
+/// 卸载命令跑完或文件删完以后：命令还在就是没卸掉；没了再看看别处还有没有一份。
+fn removal_outcome(
+    kind: ToolKind,
+    binary: &Path,
+    command: Option<String>,
+    leftovers: Vec<String>,
+) -> InstallOutcome {
+    if !uninstall::removed(binary) {
+        return InstallOutcome::StillInstalled {
+            path: binary.display().to_string(),
+            command,
+        };
+    }
+    InstallOutcome::Uninstalled {
+        remaining: tools::detect_one(kind).binary_path,
+        leftovers,
+    }
 }
 
 /// 同一时间只装一个。
@@ -189,8 +266,13 @@ impl Installer {
             Ok(command) => command,
             Err(outcome) => return Ok(outcome),
         };
-        let npm = matches!(method, Method::Npm { .. });
-        Ok(execute(app, kind, command, display, npm, &search, home).await)
+        let job = Job {
+            command,
+            display,
+            npm: matches!(method, Method::Npm { .. }),
+            after: After::Detect,
+        };
+        Ok(execute(app, kind, job, &search, home).await)
     }
 
     /// 升级：按工具是怎么装的选办法（见 `upgrade`）。`target`：要升到的版本（查到的最新版）。
@@ -221,11 +303,7 @@ impl Installer {
         }) else {
             return Ok(not_upgradable);
         };
-        // 命令所在的目录放在 PATH 最前面：`#!/usr/bin/env node` 要找到同一处的 node，npm 也先找同一处的。
-        let mut dirs: Vec<std::path::PathBuf> =
-            binary.parent().map(Path::to_path_buf).into_iter().collect();
-        dirs.extend(std::env::split_paths(&search));
-        let search = std::env::join_paths(dirs).unwrap_or(search);
+        let search = with_dir_first(binary.parent(), search);
         let plan = crate::upgrade::plan(
             kind,
             &binary,
@@ -253,6 +331,7 @@ impl Installer {
                 args,
                 display,
                 npm,
+                env,
             }) => {
                 // 只能用 npm 装的工具，升级前也确认 Node.js 版本够：新版装上了却运行不了更麻烦。
                 if npm && let Method::Npm { node_major, .. } = method(kind) {
@@ -269,24 +348,111 @@ impl Installer {
                     }
                 }
                 let mut command = Command::new(program);
-                command.args(args);
+                command.args(args).envs(env);
                 (command, display, npm)
             }
         };
-        Ok(execute(app, kind, command, display, npm, &search, home).await)
+        let job = Job {
+            command,
+            display,
+            npm,
+            after: After::Detect,
+        };
+        Ok(execute(app, kind, job, &search, home).await)
+    }
+
+    /// 卸载（只卸程序，配置留着）。`confirmed` 是用户确认过的预览：重新检测一次，不一样就不动。
+    pub async fn uninstall(
+        &self,
+        app: &AppHandle,
+        kind: ToolKind,
+        confirmed: uninstall::Preview,
+    ) -> Result<InstallOutcome, Busy> {
+        let Ok(_guard) = self.lock.try_lock() else {
+            return Err(Busy);
+        };
+        let current = tauri::async_runtime::spawn_blocking(move || uninstall_preview(kind))
+            .await
+            .ok()
+            .flatten();
+        let Some(current) = current else {
+            // 已经检测不到了（例如在终端里卸掉了）：要的结果已经达到。
+            return Ok(InstallOutcome::Uninstalled {
+                remaining: None,
+                leftovers: Vec::new(),
+            });
+        };
+        if current != confirmed {
+            return Ok(InstallOutcome::Changed);
+        }
+        let home = crate::paths::home_dir();
+        let binary = PathBuf::from(&confirmed.binary);
+        let search = with_dir_first(
+            binary.parent(),
+            tools::search_path(&home, std::env::var_os("PATH")),
+        );
+        match confirmed.plan {
+            uninstall::Plan::Manual { command, .. } => Ok(InstallOutcome::Manual { command }),
+            uninstall::Plan::Command {
+                program,
+                args,
+                display,
+                npm,
+                env,
+            } => {
+                let mut command = Command::new(program);
+                command.args(args).envs(env);
+                let job = Job {
+                    command,
+                    display: display.clone(),
+                    npm,
+                    after: After::Removed {
+                        binary,
+                        command: display,
+                    },
+                };
+                Ok(execute(app, kind, job, &search, home).await)
+            }
+            uninstall::Plan::Files { program, files } => {
+                let display = uninstall::remove_command(&files);
+                emit(app, kind, &format!("$ {display}"));
+                let command = display.clone();
+                let removal = tauri::async_runtime::spawn_blocking(move || {
+                    uninstall::remove_files(&binary, &program, &files)
+                        .map(|leftovers| removal_outcome(kind, &binary, Some(command), leftovers))
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+                Ok(match removal {
+                    Ok(outcome) => outcome,
+                    Err(reason) if reason == "changed" => InstallOutcome::Changed,
+                    Err(reason) => {
+                        emit(app, kind, &reason);
+                        InstallOutcome::Failed {
+                            code: None,
+                            command: display,
+                        }
+                    }
+                })
+            }
+        }
     }
 }
 
-/// 运行安装或升级命令，把输出发给界面，结束后重新检测（或者分析失败原因；`npm`：是 npm 命令）。
+/// 运行安装、升级或卸载命令，把输出发给界面；成功后重新检测（卸载是确认命令没了），失败时分析原因。
 async fn execute(
     app: &AppHandle,
     kind: ToolKind,
-    mut command: Command,
-    display: String,
-    npm: bool,
+    job: Job,
     search: &OsString,
-    home: std::path::PathBuf,
+    home: PathBuf,
 ) -> InstallOutcome {
+    let Job {
+        mut command,
+        display,
+        npm,
+        after,
+    } = job;
     command.env("PATH", search);
     for (key, value) in proxy_env(|key| std::env::var_os(key).is_some()) {
         command.env(key, value);
@@ -302,13 +468,17 @@ async fn execute(
         Run::Done { code, lines } => {
             if code == Some(0) {
                 // 重新检测要运行 --version、读终端的 PATH，放到后台线程里。
-                tauri::async_runtime::spawn_blocking(move || installed(kind, &home))
-                    .await
-                    .unwrap_or(InstallOutcome::Installed {
-                        version: None,
-                        binary_path: None,
-                        path_hint: None,
-                    })
+                tauri::async_runtime::spawn_blocking(move || match after {
+                    After::Detect => installed(kind, &home),
+                    After::Removed { binary, command } => {
+                        removal_outcome(kind, &binary, Some(command), Vec::new())
+                    }
+                })
+                .await
+                .unwrap_or(InstallOutcome::Failed {
+                    code: None,
+                    command: display,
+                })
             } else {
                 failure(npm, code, &lines, display)
             }

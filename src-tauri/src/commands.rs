@@ -16,6 +16,7 @@ use crate::tickets::{
     ImageUpload, NewTicket, TicketDetail, TicketError, TicketList, TicketSession, Tickets,
 };
 use crate::tools::ToolKind;
+use crate::uninstall;
 use crate::upgrade::{self, ToolLatest};
 use crate::{paths, tools};
 
@@ -315,6 +316,35 @@ pub async fn upgrade_tool(
 ) -> CommandResult<InstallOutcome> {
     let outcome = installer
         .upgrade(&app, kind, mirror, version.as_deref())
+        .await
+        .map_err(|_| CommandError {
+            code: "installBusy".to_string(),
+            message: None,
+        })?;
+    refresh_tray(&app);
+    Ok(outcome)
+}
+
+/// 卸载前的预览：要运行的命令或要删的文件（工具没装时为空）。
+#[tauri::command]
+pub async fn uninstall_plan(kind: ToolKind) -> Option<uninstall::Preview> {
+    tauri::async_runtime::spawn_blocking(move || crate::install::uninstall_preview(kind))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 卸载工具（只卸程序，配置文件留着）。`confirmed`：用户确认过的预览，和现在检测到的不一样时不动。
+/// 输出同样通过 `tool-install` 事件发给界面。
+#[tauri::command]
+pub async fn uninstall_tool(
+    app: AppHandle,
+    installer: State<'_, Installer>,
+    kind: ToolKind,
+    confirmed: uninstall::Preview,
+) -> CommandResult<InstallOutcome> {
+    let outcome = installer
+        .uninstall(&app, kind, confirmed)
         .await
         .map_err(|_| CommandError {
             code: "installBusy".to_string(),

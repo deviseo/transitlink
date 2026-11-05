@@ -808,16 +808,7 @@ fn operator_recommend(
     config: Option<&SiteConfig>,
     kind: ToolKind,
 ) -> Option<&siteconfig::ToolRecommend> {
-    let config = config?;
-    Some(match kind {
-        ToolKind::ClaudeCode => &config.recommend.claude_code,
-        ToolKind::Codex => &config.recommend.codex,
-        // 新工具 TransitHub 还没有推荐设置：按分组认。
-        ToolKind::GeminiCli
-        | ToolKind::GrokBuild
-        | ToolKind::OpenCode
-        | ToolKind::DeepseekHarness => return None,
-    })
+    Some(config?.recommend.tool(kind))
 }
 
 /// 给工具推荐分组：先用站长指定的分组（站点里还有这个分组时）；再按 sub2api 分组的平台

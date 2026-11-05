@@ -37,6 +37,21 @@ pub fn npm_package(kind: ToolKind, local: Option<&str>) -> &'static str {
     }
 }
 
+/// 这个工具可能的 npm 包名（OpenCode 1 和 2 是两个包）：看命令是谁装的时候用。
+pub fn npm_packages(kind: ToolKind) -> &'static [&'static str] {
+    match kind {
+        ToolKind::ClaudeCode => &["@anthropic-ai/claude-code"],
+        ToolKind::Codex => &["@openai/codex"],
+        ToolKind::GeminiCli => &["@google/gemini-cli"],
+        ToolKind::GrokBuild => &["@xai-official/grok"],
+        ToolKind::OpenCode => &["opencode-ai", "@opencode/cli"],
+        ToolKind::DeepseekHarness => &["@deepseek-ai/dsh"],
+    }
+}
+
+/// Homebrew 卸载、清理时默认会顺手删掉「不再被需要」的依赖（例如别的工具还在用的 node）：关掉它。
+pub const HOMEBREW_NO_AUTOREMOVE: (&str, &str) = ("HOMEBREW_NO_AUTOREMOVE", "1");
+
 /// npm 升级时要加的参数（和一键安装一致）。
 fn npm_extra(kind: ToolKind, package: &str) -> Vec<String> {
     match kind {
@@ -170,12 +185,13 @@ fn pre_newer(latest: &[String], local: &[String]) -> bool {
 /// 怎么升级。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
-    /// 运行这个命令（`npm`：是 npm 升级，失败时按 npm 的错误分析）。
+    /// 运行这个命令（`npm`：是 npm 升级，失败时按 npm 的错误分析；`env`：额外的环境变量）。
     Run {
         program: PathBuf,
         args: Vec<String>,
         display: String,
         npm: bool,
+        env: Vec<(String, String)>,
     },
     /// 重新运行官方安装（Codex）。
     Reinstall(Method),
@@ -185,7 +201,7 @@ pub enum Plan {
 
 /// 装工具用的包管理器。
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Manager {
+pub(crate) enum Manager {
     Npm,
     Pnpm,
     Bun,
@@ -196,7 +212,7 @@ enum Manager {
 /// 启动脚本这么小以内才读（真正的程序动辄几十 MB，不读）。
 const MAX_SCRIPT_BYTES: u64 = 64 * 1024;
 
-fn small_text(path: &Path) -> Option<String> {
+pub(crate) fn small_text(path: &Path) -> Option<String> {
     let size = std::fs::metadata(path).ok()?.len();
     if size > MAX_SCRIPT_BYTES {
         return None;
@@ -206,7 +222,7 @@ fn small_text(path: &Path) -> Option<String> {
 }
 
 /// 看命令的真实位置（和它旁边的文件、它的启动脚本）判断是哪个包管理器装的。
-fn manager(binary: &Path, real: &Path, package: &str) -> Option<Manager> {
+pub(crate) fn manager(binary: &Path, real: &Path, packages: &[&str]) -> Option<Manager> {
     let lower = path_text(real).to_ascii_lowercase();
     if lower.contains("/.volta/") || lower.contains("/volta/bin/") {
         return Some(Manager::Volta);
@@ -226,7 +242,10 @@ fn manager(binary: &Path, real: &Path, package: &str) -> Option<Manager> {
     // 命令是启动脚本（Windows 上 npm 的 `.cmd`，pnpm、Yarn 的脚本）：包在同目录的 node_modules 里
     // 就是 npm 装的；否则看脚本里写的位置。
     let dir = binary.parent()?;
-    if dir.join("node_modules").join(package).is_dir() {
+    if packages
+        .iter()
+        .any(|package| dir.join("node_modules").join(package).is_dir())
+    {
         return Some(Manager::Npm);
     }
     let script = small_text(binary)?.replace('\\', "/").to_ascii_lowercase();
@@ -239,7 +258,7 @@ fn manager(binary: &Path, real: &Path, package: &str) -> Option<Manager> {
     None
 }
 
-fn path_text(path: &Path) -> String {
+pub(crate) fn path_text(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -285,11 +304,13 @@ pub fn plan(
         }
         args.push(name);
         let display = format!("brew {}", args.join(" "));
+        let (key, value) = HOMEBREW_NO_AUTOREMOVE;
         return Some(Plan::Run {
             program: brew,
             args,
-            display,
+            display: format!("{key}={value} {display}"),
             npm: false,
+            env: vec![(key.to_string(), value.to_string())],
         });
     }
     let command = |prefix: &str| {
@@ -297,7 +318,7 @@ pub fn plan(
             command: Some(format!("{prefix} {package}@{spec}")),
         })
     };
-    match manager(binary, &real, package) {
+    match manager(binary, &real, npm_packages(kind)) {
         Some(Manager::Npm) => return npm_plan(kind, package, &spec, binary, mirror, search, home),
         Some(Manager::Pnpm) => return command("pnpm add -g"),
         Some(Manager::Bun) => return command("bun add -g"),
@@ -316,6 +337,7 @@ pub fn plan(
             display: format!("{name} {}", args.join(" ")),
             args,
             npm: false,
+            env: Vec::new(),
         })
     };
     match kind {
@@ -360,6 +382,7 @@ fn npm_plan(
         args,
         display,
         npm: true,
+        env: Vec::new(),
     })
 }
 
@@ -453,6 +476,7 @@ mod tests {
                     "npm install -g @google/gemini-cli@0.67.0 --registry={NPM_MIRROR}"
                 ),
                 npm: true,
+                env: Vec::new(),
             }
         );
 
