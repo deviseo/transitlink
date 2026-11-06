@@ -57,7 +57,7 @@
 
 ## 站长：给用户发专属链接
 
-在 [TransitHub](https://github.com/deviseo/transit-hub) 的「客户端」页面设置品牌、每个工具推荐的分组和模型（Claude Code、Codex 以外的工具要 TransitHub 1.2.0 或更高版本）、公告和客服，然后把生成的 `transitlink://connect?config=…` 链接发给用户。用户点链接（或者把链接粘贴到「接入站点」的网址栏）就能接入，登录后自动打开一键配置。
+在 [TransitHub](https://github.com/deviseo/transit-hub) 的「客户端」页面设置品牌、每个工具推荐的分组和模型（Gemini CLI、Grok Build、OpenCode、DeepSeek Harness 要 TransitHub 1.2.0，Pi、Oh My Pi、Kimi Code、MiniMax Code、OpenClaw 要 TransitHub 1.3.0 或更高版本；Antigravity 不能一键配置，没有推荐设置）、公告和客服，然后把生成的 `transitlink://connect?config=…` 链接发给用户。用户点链接（或者把链接粘贴到「接入站点」的网址栏）就能接入，登录后自动打开一键配置。
 
 - 链接里是 TransitHub 的公开配置接口 `…/api/client/v1/sites/<代码>`，用户的电脑要能访问它；TransitHub 只需要对外开放 `/api/client/` 开头的接口。
 - 配置只接受 https 地址；配置里的站点地址必须和用户登录的站点一致，别的链接改不了这个站点的品牌。

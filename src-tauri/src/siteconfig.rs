@@ -51,7 +51,8 @@ pub struct ToolRecommend {
     pub model: String,
 }
 
-/// 各工具的推荐设置。TransitHub 1.2 起才有后四个工具，旧版本的配置里没有（按没指定处理）。
+/// 各工具的推荐设置。TransitHub 1.2 起才有 Gemini CLI 到 DeepSeek Harness，1.3 起才有 Pi 到 OpenClaw；
+/// 旧版本的配置里没有（按没指定处理）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConfigRecommend {
@@ -61,6 +62,11 @@ pub struct ConfigRecommend {
     pub grok_build: ToolRecommend,
     pub opencode: ToolRecommend,
     pub deepseek_harness: ToolRecommend,
+    pub pi: ToolRecommend,
+    pub oh_my_pi: ToolRecommend,
+    pub kimi_code: ToolRecommend,
+    pub minimax_code: ToolRecommend,
+    pub openclaw: ToolRecommend,
 }
 
 static NO_RECOMMEND: ToolRecommend = ToolRecommend {
@@ -79,13 +85,13 @@ impl ConfigRecommend {
             ToolKind::GrokBuild => &self.grok_build,
             ToolKind::OpenCode => &self.opencode,
             ToolKind::DeepseekHarness => &self.deepseek_harness,
-            // TransitHub 还没有这几个工具的推荐设置：按分组名称认。
-            ToolKind::Pi
-            | ToolKind::OhMyPi
-            | ToolKind::KimiCode
-            | ToolKind::MinimaxCode
-            | ToolKind::OpenClaw
-            | ToolKind::Antigravity => &NO_RECOMMEND,
+            ToolKind::Pi => &self.pi,
+            ToolKind::OhMyPi => &self.oh_my_pi,
+            ToolKind::KimiCode => &self.kimi_code,
+            ToolKind::MinimaxCode => &self.minimax_code,
+            ToolKind::OpenClaw => &self.openclaw,
+            // 没法一键配置，没有推荐设置。
+            ToolKind::Antigravity => &NO_RECOMMEND,
         }
     }
 }
@@ -201,6 +207,11 @@ fn sanitize(mut config: SiteConfig, config_url: &url::Url) -> Result<SiteConfig,
         &mut config.recommend.grok_build,
         &mut config.recommend.opencode,
         &mut config.recommend.deepseek_harness,
+        &mut config.recommend.pi,
+        &mut config.recommend.oh_my_pi,
+        &mut config.recommend.kimi_code,
+        &mut config.recommend.minimax_code,
+        &mut config.recommend.openclaw,
     ] {
         clip(&mut tool.group, 100);
         clip(&mut tool.model, 100);
@@ -298,7 +309,9 @@ mod tests {
                 "recommend": {
                     "claudeCode": { "group": "claude", "model": "" },
                     "codex": { "group": "codex", "model": "gpt-6.1-sol" },
-                    "deepseekHarness": { "group": " deepseek ", "model": "deepseek-v4" }
+                    "deepseekHarness": { "group": " deepseek ", "model": "deepseek-v4" },
+                    "ohMyPi": { "group": "claude", "model": "claude-sonnet-5-5" },
+                    "kimiCode": { "group": "kimi", "model": " kimi-k2.6 " }
                 },
                 "notice": { "content": "周六维护", "updatedAt": "2026-11-04T08:00:00Z" },
                 "support": [{ "type": "telegram", "label": "TG", "value": "https://t.me/x" }, { "type": "qq", "label": "空", "value": " " }],
@@ -343,6 +356,15 @@ mod tests {
         assert_eq!(
             (dsh.group.as_str(), dsh.model.as_str()),
             ("deepseek", "deepseek-v4")
+        );
+        let kimi = config.recommend.tool(crate::tools::ToolKind::KimiCode);
+        assert_eq!(
+            (kimi.group.as_str(), kimi.model.as_str()),
+            ("kimi", "kimi-k2.6")
+        );
+        assert_eq!(
+            config.recommend.tool(crate::tools::ToolKind::OhMyPi).model,
+            "claude-sonnet-5-5"
         );
         // 旧版 TransitHub 没有的工具：当作没指定。
         assert_eq!(
