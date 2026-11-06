@@ -136,3 +136,5 @@ src-tauri/               Rust 核心
 ## 致谢
 
 决定 Claude Code、Codex 连到哪里、用什么鉴权的配置项清单，参考了 [cc-switch](https://github.com/farion1231/cc-switch)（MIT 许可）的整理；DeepSeek Harness、Pi、Oh My Pi、Kimi Code、MiniMax Code、OpenClaw 的配置写法，各工具的升级和卸载办法也参考了 cc-switch，并对照各工具自己的源码核实过。
+
+工具图标用的是各工具自己的 logo，来自 [LobeHub Icons](https://github.com/lobehub/lobe-icons)（MIT 许可），Oh My Pi 的取自它的官网 [omp.sh](https://omp.sh)（MIT 许可）。这些 logo 是各自所有者的商标，只用来标明是哪个工具；来源和许可证全文见 [`src/assets/tools/LICENSES.md`](src/assets/tools/LICENSES.md)。
