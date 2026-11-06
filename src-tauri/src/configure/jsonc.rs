@@ -8,8 +8,9 @@ use super::ConfigError;
 
 /// 解析（空内容当作空文档）。顶层不是对象时算格式有误：不去改它。
 pub fn parse(text: Option<&str>) -> Result<CstRootNode, ConfigError> {
-    let root = CstRootNode::parse(text.unwrap_or_default(), &ParseOptions::default())
-        .map_err(|_| ConfigError::Invalid)?;
+    let text = super::multi::strip_bom(text.unwrap_or_default());
+    let root =
+        CstRootNode::parse(text, &ParseOptions::default()).map_err(|_| ConfigError::Invalid)?;
     if root.value().is_some() && root.object_value().is_none() {
         return Err(ConfigError::Invalid);
     }

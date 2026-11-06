@@ -304,13 +304,44 @@ fn run_quietly(mut command: Command, limit: Duration) -> Option<Vec<u8>> {
     reader.join().ok()
 }
 
+/// 找命令。老的 Python 版 kimi-cli 也叫 `kimi`：跳过它（和 Kimi 官方安装脚本一样，看真实文件开头
+/// 4 KB 里有没有 `kimi_cli`；Windows 上 uv 生成的小 .exe 启动器把脚本路径写在末尾，整个看）。
+fn find_binary(kind: ToolKind, search: &OsString, home: &Path) -> Option<PathBuf> {
+    if kind != ToolKind::KimiCode {
+        return which::which_in(kind.binary(), Some(search), home).ok();
+    }
+    which::which_in_all(kind.binary(), Some(search), home)
+        .ok()?
+        .find(|path| !legacy_kimi(path))
+}
+
+fn legacy_kimi(path: &Path) -> bool {
+    use std::io::Read;
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let Ok(file) = std::fs::File::open(&real) else {
+        return false;
+    };
+    let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let limit = if cfg!(windows) && size <= 1 << 20 {
+        size
+    } else {
+        4096
+    };
+    let mut head = Vec::new();
+    if file.take(limit).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    head.windows(b"kimi_cli".len())
+        .any(|window| window == b"kimi_cli")
+}
+
 fn detect(
     kind: ToolKind,
     home: &Path,
     env: &dyn Fn(&str) -> Option<String>,
     search: &OsString,
 ) -> ToolStatus {
-    let binary = which::which_in(kind.binary(), Some(search), home).ok();
+    let binary = find_binary(kind, search, home);
     let version = binary
         .as_deref()
         .and_then(|path| read_version(path, search));
@@ -591,5 +622,34 @@ mod tests {
         assert!(status.installed);
         assert_eq!(status.version.as_deref(), Some("0.149.0"));
         assert!(!status.config_exists);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_old_python_kimi_cli_is_not_kimi_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("transitlink-kimi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (legacy, native) = (dir.join("uv-bin"), dir.join("kimi-code-bin"));
+        for (folder, text) in [
+            (
+                &legacy,
+                "#!/usr/bin/env python3\nfrom kimi_cli.cli import main\nmain()\n",
+            ),
+            (&native, "#!/bin/sh\necho 'kimi 2.5.1'\n"),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("kimi"), text).unwrap();
+            std::fs::set_permissions(folder.join("kimi"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let both = std::env::join_paths([legacy.clone(), native.clone()]).unwrap();
+        assert_eq!(
+            find_binary(ToolKind::KimiCode, &both, &dir),
+            Some(native.join("kimi"))
+        );
+        let only_legacy = std::env::join_paths([legacy.clone()]).unwrap();
+        assert_eq!(find_binary(ToolKind::KimiCode, &only_legacy, &dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

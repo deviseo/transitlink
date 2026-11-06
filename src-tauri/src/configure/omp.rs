@@ -10,6 +10,9 @@
 //!   一定要写，不写的话 Anthropic 请求会冒充 Claude Code 的格式。
 //! - models.yml 里有一个服务商不合法，OMP 会停用所有自定义服务商：只写它认识的字段。
 //! - 第一次运行的设置向导会改默认模型：还没做过向导的（`setupVersion` 小于 2）记成做过。
+//! - 设置文件是 `config.yml`、`config.yaml` 里先找到的那个。两个都没有时 OMP 每次启动都会把老的
+//!   `settings.json` 搬过来（搬完改名成 `.bak`）；这时先写会让它不再搬，所以请用户先运行一次。
+//! - 设了 `enabledModels`（只用这几个模型）时加上 `transitlink/*`，否则默认模型不在里面不会被用上。
 //!
 //! 2026-11-06 对照 Oh My Pi 18.16.0（`@oh-my-pi/pi-coding-agent`）源码核实；写法参考了 cc-switch（MIT）。
 
@@ -24,6 +27,8 @@ use super::{ConfigError, Connection, yaml_map};
 
 pub const PROVIDER_ID: &str = "transitlink";
 const SETUP_VERSION: u64 = 2;
+/// 加进 `enabledModels` 的写法：我们所有的模型。
+const SCOPE: &str = "transitlink/*";
 
 fn non_empty(env: &dyn Fn(&str) -> Option<String>, name: &str) -> Option<String> {
     env(name)
@@ -33,10 +38,16 @@ fn non_empty(env: &dyn Fn(&str) -> Option<String>, name: &str) -> Option<String>
 
 /// OMP 的配置目录。
 pub fn agent_dir(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
-    let base = home.join(non_empty(env, "PI_CONFIG_DIR").unwrap_or_else(|| ".omp".into()));
-    let profile = non_empty(env, "OMP_PROFILE")
-        .or_else(|| non_empty(env, "PI_PROFILE"))
-        .filter(|name| name != "default");
+    // 和 OMP 一样用 path.join 接在主目录后面：写成绝对路径也还是在主目录下。
+    let name = env("PI_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".omp".into());
+    let base = home.join(name.trim_start_matches(['/', '\\']));
+    // 设了 OMP_PROFILE（哪怕是空的）就不看 PI_PROFILE。
+    let profile = env("OMP_PROFILE")
+        .or_else(|| env("PI_PROFILE"))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty() && name != "default");
     match profile {
         Some(name) => base.join("profiles").join(name).join("agent"),
         None => non_empty(env, "PI_CODING_AGENT_DIR")
@@ -46,13 +57,35 @@ pub fn agent_dir(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct Snapshot {
     models_existed: bool,
     provider: Option<String>,
     config_existed: bool,
     default_role: Option<String>,
     setup_version: Option<String>,
+    /// 我们往 `enabledModels` 里加了 [`SCOPE`]。
+    enabled_added: bool,
+}
+
+/// 目录里第一个存在的文件；都没有时用第一个名字。
+fn first_present(dir: &Path, names: [&str; 2]) -> PathBuf {
+    names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| dir.join(names[0]))
+}
+
+/// 老的 `settings.json` 里有设置，OMP 还没搬（搬完会改名）。
+fn legacy_settings(dir: &Path) -> bool {
+    let Ok(Some(text)) = super::files::read(&dir.join("settings.json")) else {
+        return false;
+    };
+    super::jsonc::parse(Some(&text))
+        .ok()
+        .and_then(|root| root.object_value())
+        .is_some_and(|object| !object.properties().is_empty())
 }
 
 fn key(name: &str) -> Yaml {
@@ -112,16 +145,28 @@ pub struct Adapter;
 impl MultiFile for Adapter {
     fn files(&self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<(PathBuf, String)> {
         let dir = agent_dir(home, env);
-        let models = ["models.yml", "models.yaml"]
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|path| path.is_file())
-            .unwrap_or_else(|| dir.join("models.yml"));
         vec![
-            (models, "models.yml".into()),
-            (dir.join("config.yml"), "config.yml".into()),
+            (
+                first_present(&dir, ["models.yml", "models.yaml"]),
+                "models.yml".into(),
+            ),
+            (
+                first_present(&dir, ["config.yml", "config.yaml"]),
+                "config.yml".into(),
+            ),
             (dir.join("models.json"), "models.json".into()),
         ]
+    }
+
+    fn ready(&self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
+        let dir = agent_dir(home, env);
+        let has_config = ["config.yml", "config.yaml"]
+            .iter()
+            .any(|name| dir.join(name).is_file());
+        if !has_config && legacy_settings(&dir) {
+            return Err(ConfigError::RunFirst("omp".into()));
+        }
+        Ok(())
     }
 
     fn apply(
@@ -136,12 +181,13 @@ impl MultiFile for Adapter {
         }
         let models_doc = parse(models)?;
         let config_doc = parse(config)?;
-        let snapshot = multi::snapshot::<Snapshot>(previous).unwrap_or_else(|| Snapshot {
+        let mut snapshot = multi::snapshot::<Snapshot>(previous).unwrap_or_else(|| Snapshot {
             models_existed: models.text.is_some(),
             provider: yaml_map::saved(&models_doc, &PROVIDER),
             config_existed: config.text.is_some(),
             default_role: yaml_map::saved(&config_doc, &DEFAULT_ROLE),
             setup_version: yaml_map::saved(&config_doc, &["setupVersion"]),
+            enabled_added: false,
         });
         let models_text = set(
             models,
@@ -161,6 +207,21 @@ impl MultiFile for Adapter {
                 &["setupVersion"],
                 Some(&Yaml::Number(SETUP_VERSION.into())),
             )?;
+        }
+        if let Some(list) =
+            yaml_map::get(&config_doc, &["enabledModels"]).and_then(Yaml::as_sequence)
+            && !list.is_empty()
+            && !list.iter().any(|item| item.as_str() == Some(SCOPE))
+        {
+            let mut list = list.clone();
+            list.push(key(SCOPE));
+            config_text = set(
+                config,
+                &config_text,
+                &["enabledModels"],
+                Some(&Yaml::Sequence(list)),
+            )?;
+            snapshot.enabled_added = true;
         }
         Ok((
             vec![Some(models_text), Some(config_text), legacy.text.clone()],
@@ -220,6 +281,25 @@ impl MultiFile for Adapter {
                 let mut restored = set(config, text, &DEFAULT_ROLE, role.as_ref())?;
                 let version = yaml_map::from_saved(snapshot.setup_version.as_deref());
                 restored = set(config, &restored, &["setupVersion"], version.as_ref())?;
+                let current = yaml_map::parse(&restored).map_err(|error| config.at(error))?;
+                if snapshot.enabled_added
+                    && let Some(list) =
+                        yaml_map::get(&current, &["enabledModels"]).and_then(Yaml::as_sequence)
+                {
+                    let kept: Vec<Yaml> = list
+                        .iter()
+                        .filter(|item| item.as_str() != Some(SCOPE))
+                        .cloned()
+                        .collect();
+                    if kept.len() != list.len() {
+                        restored = set(
+                            config,
+                            &restored,
+                            &["enabledModels"],
+                            Some(&Yaml::Sequence(kept)),
+                        )?;
+                    }
+                }
                 (snapshot.config_existed || !yaml_map::is_empty(&restored)).then_some(restored)
             }
         };
@@ -405,5 +485,74 @@ mod tests {
             agent_dir(home, &env(&[("PI_CODING_AGENT_DIR", "/x/agent")])),
             PathBuf::from("/x/agent")
         );
+    }
+
+    #[test]
+    fn widens_enabled_models_and_puts_them_back() {
+        let config_before = "setupVersion: 2\nenabledModels:\n  - anthropic/*\n";
+        let start = docs(None, Some(config_before), None);
+        let list = vec!["gpt-6.1-sol".to_string()];
+        let (next, snapshot) = Adapter
+            .apply(&start, &target("gpt-6.1-sol", &list), None)
+            .unwrap();
+        let config = yaml_map::parse(next[1].as_deref().unwrap()).unwrap();
+        let wanted: Yaml = serde_yaml::from_str("[anthropic/*, transitlink/*]").unwrap();
+        assert_eq!(yaml_map::get(&config, &["enabledModels"]), Some(&wanted));
+        let restored = Adapter.restore(&with(&start, next), &snapshot).unwrap();
+        assert_eq!(
+            yaml_map::parse(restored[1].as_deref().unwrap()).unwrap(),
+            yaml_map::parse(config_before).unwrap()
+        );
+    }
+
+    #[test]
+    fn profile_and_config_dir_follow_omp() {
+        let home = Path::new("/home/a");
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        assert_eq!(
+            agent_dir(home, &env(&[("PI_PROFILE", "work")])),
+            PathBuf::from("/home/a/.omp/profiles/work/agent")
+        );
+        // 设了 OMP_PROFILE（哪怕是空的）就不看 PI_PROFILE。
+        assert_eq!(
+            agent_dir(home, &env(&[("OMP_PROFILE", ""), ("PI_PROFILE", "work")])),
+            PathBuf::from("/home/a/.omp/agent")
+        );
+        // Node 的 path.join：绝对路径也接在主目录后面。
+        assert_eq!(
+            agent_dir(home, &env(&[("PI_CONFIG_DIR", "/omp-config")])),
+            PathBuf::from("/home/a/omp-config/agent")
+        );
+    }
+
+    #[test]
+    fn waits_for_omp_to_move_an_old_settings_json() {
+        let home =
+            std::env::temp_dir().join(format!("transitlink-omp-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".omp").join("agent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let none = |_: &str| None;
+        assert!(Adapter.ready(&home, &none).is_ok());
+        // 空的 settings.json 没东西可搬（OMP 也不会搬）。
+        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        assert!(Adapter.ready(&home, &none).is_ok());
+        std::fs::write(dir.join("settings.json"), "{ \"theme\": \"dark\" }").unwrap();
+        assert!(matches!(
+            Adapter.ready(&home, &none),
+            Err(ConfigError::RunFirst(command)) if command == "omp"
+        ));
+        // 已经有 config.yaml：写的就是它，不另建 config.yml 把它盖住。
+        std::fs::write(dir.join("config.yaml"), "theme: dark\n").unwrap();
+        assert!(Adapter.ready(&home, &none).is_ok());
+        assert_eq!(Adapter.files(&home, &none)[1].0, dir.join("config.yaml"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

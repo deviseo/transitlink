@@ -7,11 +7,12 @@
 //! - 换默认模型时删掉 `defaultModelVariant`、`defaultModelThinking`、`defaultModelContextWindow`
 //!   （MCode 自己换模型时也这样），还原时放回。
 //! - MCode（和 MiniMax 桌面版）改这个文件时拿 `<文件>.lock` 目录锁，10 秒以上算过期：锁着时不写。
+//! - 老版本的数据在 `~/.mavis`，MCode 启动时搬到 `~/.minimax`。还没搬时先建了 `~/.minimax`，MCode 会把
+//!   `~/.mavis` 改名备份（原来的登录、会话都不用了）：这时请用户先运行一次。
 //!
 //! 2026-11-06 对照 MiniMax Code 0.7.6（`@minimax-ai/code`）核实；写法参考了 cc-switch（MIT）。
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,18 +30,52 @@ const VARIANTS: [&str; 3] = [
     "defaultModelContextWindow",
 ];
 const PREFIX: &str = "custom_provider:transitlink/";
-/// 锁超过这么久算过期（和 MCode 一样）。
-const STALE_LOCK: Duration = Duration::from_secs(10);
+const DATA_DIR_ENV: [&str; 2] = ["MINIMAX_DATA_DIR", "MAVIS_DATA_DIR"];
 
 /// MCode 的数据目录。
 pub fn data_dir(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
-    ["MINIMAX_DATA_DIR", "MAVIS_DATA_DIR"]
+    DATA_DIR_ENV
         .iter()
         .filter_map(|name| env(name))
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".minimax"))
+}
+
+/// 目录里有没有东西（和 MCode 一样：只有一个空的 `workspace` 也算空）。读不了时为 None。
+fn has_data(dir: &Path) -> Option<bool> {
+    let names: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+        .collect();
+    Some(match names.as_slice() {
+        [] => false,
+        [only] if only == "workspace" => std::fs::read_dir(dir.join("workspace"))
+            .ok()?
+            .next()
+            .is_some(),
+        _ => true,
+    })
+}
+
+/// MCode 还没把老目录搬过来：新目录不存在或是空的，老目录里有东西（已经是指向新目录的链接的不算）。
+fn legacy_pending(primary: &Path, legacy: &Path) -> bool {
+    if let (Ok(a), Ok(b)) = (
+        std::fs::canonicalize(legacy),
+        std::fs::canonicalize(primary),
+    ) && a == b
+    {
+        return false;
+    }
+    if has_data(legacy) != Some(true) {
+        return false;
+    }
+    match std::fs::symlink_metadata(primary) {
+        Err(_) => true,
+        Ok(metadata) if metadata.is_dir() => has_data(primary) == Some(false),
+        Ok(_) => false,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -151,12 +186,17 @@ impl MultiFile for Adapter {
 
     fn busy(&self, docs: &[Doc]) -> bool {
         let real = std::fs::canonicalize(&docs[0].path).unwrap_or_else(|_| docs[0].path.clone());
-        let lock = PathBuf::from(format!("{}.lock", real.display()));
-        std::fs::metadata(&lock)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|age| age < STALE_LOCK)
+        multi::fresh_lock(&PathBuf::from(format!("{}.lock", real.display())))
+    }
+
+    fn ready(&self, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
+        let overridden = DATA_DIR_ENV
+            .iter()
+            .any(|name| env(name).is_some_and(|value| !value.trim().is_empty()));
+        if !overridden && legacy_pending(&home.join(".minimax"), &home.join(".mavis")) {
+            return Err(ConfigError::RunFirst("mcode".into()));
+        }
+        Ok(())
     }
 
     fn apply(
@@ -363,6 +403,53 @@ mod tests {
                 .restore(&docs(next[0].as_deref()), &snapshot)
                 .unwrap(),
             vec![None]
+        );
+    }
+
+    #[test]
+    fn waits_for_mcode_to_move_its_old_data_dir() {
+        let home =
+            std::env::temp_dir().join(format!("transitlink-mcode-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let none = |_: &str| None;
+        assert!(Adapter.ready(&home, &none).is_ok(), "nothing to move");
+        std::fs::create_dir_all(home.join(".mavis").join("sessions")).unwrap();
+        assert!(matches!(
+            Adapter.ready(&home, &none),
+            Err(ConfigError::RunFirst(command)) if command == "mcode"
+        ));
+        // 新目录是空的也一样（MCode 会删掉空的新目录再搬）。
+        std::fs::create_dir_all(home.join(".minimax").join("workspace")).unwrap();
+        assert!(Adapter.ready(&home, &none).is_err());
+        // 自己设了数据目录的不管。
+        let custom = |name: &str| (name == "MINIMAX_DATA_DIR").then(|| "/srv/minimax".to_string());
+        assert!(Adapter.ready(&home, &custom).is_ok());
+        // 新目录里已经有东西：MCode 怎么处理老目录和我们写不写无关。
+        std::fs::write(
+            home.join(".minimax").join("config.yaml"),
+            "statusLine: compact\n",
+        )
+        .unwrap();
+        assert!(Adapter.ready(&home, &none).is_ok());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_bom_does_not_cost_the_comments() {
+        let before = "\u{feff}# MiniMax 设置\nstatusLine: compact\n";
+        let list = vec!["MiniMax-M3".to_string()];
+        let (next, snapshot) = Adapter
+            .apply(&docs(Some(before)), &target("MiniMax-M3", &list), None)
+            .unwrap();
+        let text = next[0].as_deref().unwrap();
+        assert!(text.starts_with("# MiniMax 设置\nstatusLine: compact\n"));
+        let restored = Adapter
+            .restore(&docs(Some(&format!("\u{feff}{text}"))), &snapshot)
+            .unwrap();
+        assert_eq!(
+            restored[0].as_deref(),
+            Some("# MiniMax 设置\nstatusLine: compact\n")
         );
     }
 }

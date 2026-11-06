@@ -48,6 +48,8 @@ pub enum ConfigError {
     Unsupported(String),
     /// 工具自己正在保存配置（文件被锁住了），稍后再试。
     Busy,
+    /// 工具还有没做完的迁移（例如老版本的设置还没搬到新位置）：请用户先运行一次这个命令。
+    RunFirst(String),
     /// 测试没通过（配置前测试失败时，什么都没写）。
     Test(TestResult),
     Site(SiteError),
@@ -405,6 +407,7 @@ impl Configurator {
         // 先确认配置文件能改，免得建好 Key 才发现写不进去。
         let text = files::read(&path)?;
         if let Some(adapter) = multi(kind) {
+            adapter.ready(&self.home, &*self.env)?;
             let docs = self.multi_docs(adapter)?;
             let probe = multi::Target {
                 site_name: "",
@@ -471,6 +474,7 @@ impl Configurator {
                 if adapter.busy(&docs) {
                     return Err(ConfigError::Busy);
                 }
+                adapter.ready(&self.home, &*self.env)?;
                 let chosen = model.as_deref().unwrap_or_default();
                 let family = adapter.models(kind, chosen, &ids);
                 let target = multi::Target {

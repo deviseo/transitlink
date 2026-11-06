@@ -132,10 +132,10 @@ pub fn method(kind: ToolKind) -> Method {
             url: "https://filecdn.minimax.chat/public/install.sh",
             shell: "bash",
         },
-        // 安装时要运行它自己的脚本（装内置插件）。
+        // 安装时要运行它自己的脚本（装内置插件）。Node 要求见 [`node_supported`]，提示用户装 26。
         ToolKind::OpenClaw => Method::Npm {
             package: "openclaw",
-            node_major: 24,
+            node_major: 26,
             extra: &["--ignore-scripts=false", "--allow-scripts=openclaw"],
         },
         ToolKind::Antigravity if windows => Method::PowerShell {
@@ -304,7 +304,7 @@ impl Installer {
         let search = tools::search_path(&home, std::env::var_os("PATH"));
         let method = method(kind);
         let display = display_command(method, mirror);
-        let command = match prepare(method, &home, &search, mirror).await {
+        let command = match prepare(kind, method, &home, &search, mirror).await {
             Ok(command) => command,
             Err(outcome) => return Ok(outcome),
         };
@@ -361,7 +361,7 @@ impl Installer {
                 return Ok(InstallOutcome::Manual { command });
             }
             Some(crate::upgrade::Plan::Reinstall(reinstall)) => {
-                let command = match prepare(reinstall, &home, &search, mirror).await {
+                let command = match prepare(kind, reinstall, &home, &search, mirror).await {
                     Ok(command) => command,
                     Err(outcome) => return Ok(outcome),
                 };
@@ -378,11 +378,7 @@ impl Installer {
                 // 只能用 npm 装的工具，升级前也确认 Node.js 版本够：新版装上了却运行不了更麻烦。
                 if npm && let Method::Npm { node_major, .. } = method(kind) {
                     let found = node_version(&home, &search).await;
-                    if found
-                        .as_deref()
-                        .and_then(major_version)
-                        .is_none_or(|major| major < node_major)
-                    {
+                    if !node_supported(kind, node_major, found.as_deref()) {
                         return Ok(InstallOutcome::NeedsNode {
                             required: node_major,
                             found,
@@ -566,6 +562,7 @@ fn emit(app: &AppHandle, kind: ToolKind, line: &str) {
 
 /// 准备安装命令。npm 安装的工具先确认有 Node.js 和 npm，版本也够。
 async fn prepare(
+    kind: ToolKind,
     method: Method,
     home: &Path,
     search: &OsString,
@@ -599,11 +596,7 @@ async fn prepare(
             extra,
         } => {
             let found = node_version(home, search).await;
-            if found
-                .as_deref()
-                .and_then(major_version)
-                .is_none_or(|major| major < node_major)
-            {
+            if !node_supported(kind, node_major, found.as_deref()) {
                 return Err(InstallOutcome::NeedsNode {
                     required: node_major,
                     found,
@@ -642,14 +635,29 @@ async fn node_version(home: &Path, search: &OsString) -> Option<String> {
 }
 
 /// `v22.11.0` → 22。
-fn major_version(version: &str) -> Option<u32> {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split('.')
-        .next()?
-        .parse()
-        .ok()
+/// `v24.16.0` → `(24, 16)`。
+fn major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|minor| minor.parse().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+/// 这个 Node.js 能不能运行这个工具。OpenClaw 要 24.16 以上的 24.x，或者 26.1 以上（25.x、26.0 都不行，
+/// 它的安装脚本会直接失败）；其他工具主版本够就行。
+fn node_supported(kind: ToolKind, node_major: u32, found: Option<&str>) -> bool {
+    let Some((major, minor)) = found.and_then(major_minor) else {
+        return false;
+    };
+    match kind {
+        ToolKind::OpenClaw => {
+            (major == 24 && minor >= 16) || (major == 26 && minor >= 1) || major > 26
+        }
+        _ => major >= node_major,
+    }
 }
 
 /// 系统代理（和桌面端访问站点用的一样）交给安装命令。`already_set`：用户自己设了的变量不覆盖。
@@ -878,9 +886,27 @@ mod tests {
 
     #[test]
     fn node_versions_are_parsed() {
-        assert_eq!(major_version("v22.11.0\n"), Some(22));
-        assert_eq!(major_version("18.20.4"), Some(18));
-        assert_eq!(major_version("not node"), None);
+        assert_eq!(major_minor("v22.11.0\n"), Some((22, 11)));
+        assert_eq!(major_minor("18.20.4"), Some((18, 20)));
+        assert_eq!(major_minor("not node"), None);
+        assert!(node_supported(ToolKind::Pi, 22, Some("v22.0.0")));
+        assert!(!node_supported(ToolKind::Pi, 22, Some("v20.18.1")));
+        assert!(!node_supported(ToolKind::Pi, 22, None));
+        // OpenClaw：24.16+ 的 24.x 或 26.1+。
+        for (version, ok) in [
+            ("v24.15.0", false),
+            ("v24.16.0", true),
+            ("v25.9.0", false),
+            ("v26.0.2", false),
+            ("v26.1.0", true),
+            ("v27.0.0", true),
+        ] {
+            assert_eq!(
+                node_supported(ToolKind::OpenClaw, 26, Some(version)),
+                ok,
+                "{version}"
+            );
+        }
     }
 
     #[test]

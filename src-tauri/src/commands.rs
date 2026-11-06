@@ -54,6 +54,7 @@ impl From<ConfigError> for CommandError {
             ConfigError::NotConfigured => ("notConfigured", None),
             ConfigError::Unsupported(what) => ("configUnsupported", Some(what)),
             ConfigError::Busy => ("configBusy", None),
+            ConfigError::RunFirst(command) => ("configRunFirst", Some(command)),
             ConfigError::Test(TestResult::NoFamilyModels { .. }) => ("noFamilyModels", None),
             ConfigError::Test(TestResult::BadKey { message }) => ("badKey", message),
             ConfigError::Test(TestResult::Failed { message }) => ("probeFailed", message),

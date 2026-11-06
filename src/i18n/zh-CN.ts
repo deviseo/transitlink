@@ -53,6 +53,7 @@ const zhCN = {
     installBusy: "正在安装或升级另一个工具，请等它完成再试",
     configInvalid: "配置文件格式有误，没法自动修改，请先检查这个文件",
     configUnsupported: "这个配置文件没法安全地自动修改（写法太复杂，或者总配置里另设了服务商、默认模型），请先检查这个文件",
+    configRunFirst: "请先在终端运行一次这个工具，让它把旧的设置搬好，再回来一键配置",
     configBusy: "配置文件正被别的程序修改，请稍后再试",
     configWrite: "写入配置文件失败",
     notConfigured: "这个工具还没用 TransitLink 配置过",

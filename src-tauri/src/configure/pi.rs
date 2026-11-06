@@ -22,25 +22,46 @@ use super::multi::{self, Doc, MultiFile, Target};
 use super::{ConfigError, Connection, jsonc};
 
 pub const PROVIDER_ID: &str = "transitlink";
+/// 加进 `enabledModels` 的写法：我们所有的模型。
+const SCOPE: &str = "transitlink/*";
 
-/// Pi 的配置目录：`PI_CODING_AGENT_DIR`，没设时是 `~/.pi/agent`。
+/// Pi 的配置目录：`PI_CODING_AGENT_DIR`（开头的 `~` 换成主目录，和 Pi 一样），没设时是 `~/.pi/agent`。
 pub fn agent_dir(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
-    env("PI_CODING_AGENT_DIR")
+    let Some(value) = env("PI_CODING_AGENT_DIR")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".pi").join("agent"))
+    else {
+        return home.join(".pi").join("agent");
+    };
+    if value == "~" {
+        return home.to_path_buf();
+    }
+    let rest = value
+        .strip_prefix("~/")
+        .or_else(|| cfg!(windows).then(|| value.strip_prefix("~\\")).flatten());
+    match rest {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(value),
+    }
 }
 
 /// 第一次配置前这几项的原值（JSON 文本），还原时放回。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct Snapshot {
     models_existed: bool,
+    /// 原来就有 `providers`（哪怕是空的）：还原时留着，Pi 要求有这一项。
+    providers_existed: bool,
     provider: Option<String>,
     settings_existed: bool,
     default_provider: Option<String>,
     default_model: Option<String>,
+    /// 我们往 `enabledModels` 里加了 [`SCOPE`]。
+    enabled_added: bool,
+}
+
+fn is_scope(element: &jsonc_parser::cst::CstNode) -> bool {
+    element.to_serde_value() == Some(Value::String(SCOPE.into()))
 }
 
 /// Key 原样写进去：`$` 写成 `$$`，开头的 `!` 写成 `$!`。
@@ -148,8 +169,7 @@ impl MultiFile for Adapter {
     }
 
     fn busy(&self, docs: &[Doc]) -> bool {
-        let lock = PathBuf::from(format!("{}.lock", docs[1].path.display()));
-        lock.exists()
+        multi::fresh_lock(&PathBuf::from(format!("{}.lock", docs[1].path.display())))
     }
 
     fn apply(
@@ -164,14 +184,16 @@ impl MultiFile for Adapter {
             jsonc::parse(settings.text.as_deref()).map_err(|error| settings.at(error))?;
         let models_object = models_root.object_value_or_set();
         let settings_object = settings_root.object_value_or_set();
-        let snapshot = multi::snapshot::<Snapshot>(previous).unwrap_or_else(|| Snapshot {
+        let mut snapshot = multi::snapshot::<Snapshot>(previous).unwrap_or_else(|| Snapshot {
             models_existed: models.text.is_some(),
+            providers_existed: models_object.get("providers").is_some(),
             provider: models_object
                 .object_value("providers")
                 .and_then(|providers| jsonc::saved(&providers, PROVIDER_ID)),
             settings_existed: settings.text.is_some(),
             default_provider: jsonc::saved(&settings_object, "defaultProvider"),
             default_model: jsonc::saved(&settings_object, "defaultModel"),
+            ..Snapshot::default()
         });
         let providers = models_object.object_value_or_set("providers");
         jsonc::set(&providers, PROVIDER_ID, provider_entry(target));
@@ -185,6 +207,14 @@ impl MultiFile for Adapter {
             "defaultModel",
             CstInputValue::String(target.model.into()),
         );
+        // 设了 `enabledModels`（只用这几个模型）时，默认模型不在里面 Pi 会改用列表里的第一个：加上我们的。
+        if let Some(list) = settings_object.array_value("enabledModels")
+            && !list.elements().is_empty()
+            && !list.elements().iter().any(is_scope)
+        {
+            list.append(CstInputValue::String(SCOPE.into()));
+            snapshot.enabled_added = true;
+        }
         Ok((
             vec![
                 Some(models_root.to_string()),
@@ -243,7 +273,9 @@ impl MultiFile for Adapter {
                     if let Some(providers) = object.object_value("providers") {
                         jsonc::put_back(&providers, PROVIDER_ID, snapshot.provider.as_deref());
                     }
-                    jsonc::remove_if_empty(&object, "providers");
+                    if !snapshot.providers_existed {
+                        jsonc::remove_if_empty(&object, "providers");
+                    }
                 }
                 (snapshot.models_existed || !jsonc::is_empty(&root)).then(|| root.to_string())
             }
@@ -259,6 +291,15 @@ impl MultiFile for Adapter {
                         snapshot.default_provider.as_deref(),
                     );
                     jsonc::put_back(&object, "defaultModel", snapshot.default_model.as_deref());
+                    if snapshot.enabled_added
+                        && let Some(list) = object.array_value("enabledModels")
+                    {
+                        for element in list.elements() {
+                            if is_scope(&element) {
+                                element.remove();
+                            }
+                        }
+                    }
                 }
                 (snapshot.settings_existed || !jsonc::is_empty(&root)).then(|| root.to_string())
             }
@@ -430,5 +471,64 @@ mod tests {
             Err(ConfigError::InvalidFile(path)) => assert!(path.ends_with("models.json")),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn keeps_an_empty_providers_and_widens_enabled_models() {
+        let start = docs(
+            Some("{\n  \"providers\": {}\n}\n"),
+            Some("{\n  \"enabledModels\": [\"anthropic/claude-opus-5-5\"]\n}\n"),
+        );
+        let list = vec!["gpt-6.1-sol".to_string()];
+        let (next, snapshot) = Adapter
+            .apply(&start, &target("gpt-6.1-sol", &list), None)
+            .unwrap();
+        let settings: Value = serde_json::from_str(next[1].as_deref().unwrap()).unwrap();
+        assert_eq!(
+            settings["enabledModels"],
+            serde_json::json!(["anthropic/claude-opus-5-5", "transitlink/*"])
+        );
+        let restored = Adapter.restore(&with(&start, next), &snapshot).unwrap();
+        let models: Value = serde_json::from_str(restored[0].as_deref().unwrap()).unwrap();
+        assert_eq!(
+            models,
+            serde_json::json!({ "providers": {} }),
+            "Pi requires providers"
+        );
+        let settings: Value = serde_json::from_str(restored[1].as_deref().unwrap()).unwrap();
+        assert_eq!(
+            settings,
+            serde_json::json!({ "enabledModels": ["anthropic/claude-opus-5-5"] })
+        );
+    }
+
+    #[test]
+    fn the_agent_dir_expands_a_tilde_like_pi() {
+        let home = Path::new("/home/a");
+        let env = |value: &'static str| {
+            move |name: &str| (name == "PI_CODING_AGENT_DIR").then(|| value.to_string())
+        };
+        assert_eq!(
+            agent_dir(home, &env("~/pi-agent")),
+            PathBuf::from("/home/a/pi-agent")
+        );
+        assert_eq!(agent_dir(home, &env("~")), PathBuf::from("/home/a"));
+        assert_eq!(agent_dir(home, &env("/opt/pi")), PathBuf::from("/opt/pi"));
+        assert_eq!(
+            agent_dir(home, &|_: &str| None),
+            PathBuf::from("/home/a/.pi/agent")
+        );
+    }
+
+    #[test]
+    fn a_file_saved_with_a_bom_is_read_and_edited() {
+        let start = docs(None, Some("\u{feff}{ \"theme\": \"dark\" }\n"));
+        let list = vec!["gpt-6.1-sol".to_string()];
+        let (next, _) = Adapter
+            .apply(&start, &target("gpt-6.1-sol", &list), None)
+            .unwrap();
+        let settings: Value = serde_json::from_str(next[1].as_deref().unwrap()).unwrap();
+        assert_eq!(settings["theme"], "dark");
+        assert_eq!(settings["defaultProvider"], "transitlink");
     }
 }

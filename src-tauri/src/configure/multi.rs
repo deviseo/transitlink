@@ -2,6 +2,7 @@
 //! 只写有变化的；写到一半出错时把已经写的改回去。各个工具只管怎么从现在的内容算出新内容。
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
@@ -45,8 +46,9 @@ impl Doc {
         }
     }
 
+    /// 现在的内容（去掉开头的 BOM；写回去时 [`write`] 会再加上）。
     pub fn text(&self) -> &str {
-        self.text.as_deref().unwrap_or_default()
+        strip_bom(self.text.as_deref().unwrap_or_default())
     }
 }
 
@@ -58,6 +60,15 @@ pub trait MultiFile: Sync {
     /// 工具自己正在保存配置（锁着）：稍后再试。
     fn busy(&self, _docs: &[Doc]) -> bool {
         false
+    }
+
+    /// 能不能现在就写：工具自己还有没做完的迁移时返回 [`ConfigError::RunFirst`]（先写了会打断它的迁移）。
+    fn ready(
+        &self,
+        _home: &Path,
+        _env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<(), ConfigError> {
+        Ok(())
     }
 
     /// 写入站点连接。`previous` 是之前配置时留下的快照：已经配置过就沿用它，还原总是回到第一次之前。
@@ -81,6 +92,22 @@ pub trait MultiFile: Sync {
     fn models(&self, _kind: ToolKind, chosen: &str, ids: &[String]) -> Vec<String> {
         probe::opencode_family(chosen, ids)
     }
+}
+
+const BOM: char = '\u{feff}';
+
+/// 去掉开头的 BOM（Windows 记事本、PowerShell 5 存的 UTF-8 文件会带）。
+pub fn strip_bom(text: &str) -> &str {
+    text.strip_prefix(BOM).unwrap_or(text)
+}
+
+/// proper-lockfile 的锁（`<文件>.lock` 目录）：10 秒内动过才算有人拿着，再久的是崩溃留下的。
+pub fn fresh_lock(lock: &Path) -> bool {
+    std::fs::metadata(lock)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age < Duration::from_secs(10))
 }
 
 /// 读出这些文件。
@@ -111,10 +138,15 @@ pub fn write(docs: &[Doc], next: &[Option<String>]) -> Result<(), ConfigError> {
     }
     let mut written: Vec<usize> = Vec::new();
     for (index, doc) in docs.iter().enumerate() {
-        if doc.text == next[index] {
+        // 原文件带 BOM：新内容也带上。
+        let next = next[index].as_ref().map(|text| match &doc.text {
+            Some(old) if old.starts_with(BOM) && !text.starts_with(BOM) => format!("{BOM}{text}"),
+            _ => text.clone(),
+        });
+        if doc.text == next {
             continue;
         }
-        let result = match &next[index] {
+        let result = match &next {
             Some(text) => files::write(&doc.path, text),
             None => files::remove(&doc.path),
         };
@@ -173,5 +205,44 @@ mod tests {
         // 没变的文件不写。
         write(&docs[..1], &[Some("old".into())]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn temp_file(name: &str, text: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("transitlink-multi-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_bom_is_hidden_from_adapters_and_kept_on_disk() {
+        let path = temp_file("bom", "\u{feff}{}\n");
+        let docs = read(vec![(path.clone(), "settings.json".into())]).unwrap();
+        assert_eq!(docs[0].text(), "{}\n");
+        write(&docs, &[Some("{ \"a\": 1 }\n".into())]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "\u{feff}{ \"a\": 1 }\n"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_recent_locks_count() {
+        let path = temp_file("lock", "{}");
+        let lock = PathBuf::from(format!("{}.lock", path.display()));
+        assert!(!fresh_lock(&lock));
+        std::fs::create_dir(&lock).unwrap();
+        assert!(fresh_lock(&lock));
+        std::fs::File::open(&lock)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        assert!(!fresh_lock(&lock), "a lock left by a crash is stale");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

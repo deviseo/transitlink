@@ -2,7 +2,8 @@
 //! 再把 `agents.defaults.model` 的主模型设成 `transitlink/<模型>`。
 //!
 //! - 位置：`OPENCLAW_CONFIG_PATH` > `$OPENCLAW_STATE_DIR/openclaw.json` >（`OPENCLAW_HOME` 或主目录）下的
-//!   `.openclaw/openclaw.json`；`OPENCLAW_PROFILE=X` 时是 `.openclaw-X/`。
+//!   `.openclaw/openclaw.json`。配置档（`.openclaw-X/`）只在命令行带 `--profile X` 时用，光设
+//!   `OPENCLAW_PROFILE` 环境变量不换目录。
 //! - 配置有严格的格式检查，多一个不认识的键 Gateway 就起不来：只写它认识的字段，模型的 `id`、`name` 都要写。
 //! - 一个服务商可以按模型换接口：Claude 模型走 anthropic-messages（站点根地址），名字有 codex 的走
 //!   openai-responses，其他走 openai-completions（加 `compat.supportsUsageInStreaming`，否则统计不到用量）。
@@ -40,14 +41,11 @@ pub fn config_path(home: &Path, env: &dyn Fn(&str) -> Option<String>) -> PathBuf
     if let Some(dir) = non_empty(env, "OPENCLAW_STATE_DIR") {
         return PathBuf::from(dir).join("openclaw.json");
     }
-    let base = non_empty(env, "OPENCLAW_HOME")
+    non_empty(env, "OPENCLAW_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home.to_path_buf());
-    let dir = match non_empty(env, "OPENCLAW_PROFILE") {
-        Some(profile) => format!(".openclaw-{profile}"),
-        None => ".openclaw".into(),
-    };
-    base.join(dir).join("openclaw.json")
+        .unwrap_or_else(|| home.to_path_buf())
+        .join(".openclaw")
+        .join("openclaw.json")
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -342,13 +340,16 @@ impl MultiFile for Adapter {
                 }
                 jsonc::remove_if_empty(&object, "agents");
             }
+            // `gateway.mode` 留着：之后装的 Gateway 服务要靠它才能启动。只有文件是我们建的、而且只剩
+            // 这一项时才去掉（文件会整个删掉）。
             if snapshot.gateway_added
-                && let Some(gateway) = object.object_value("gateway")
+                && !snapshot.file_existed
+                && object.properties().len() == 1
+                && jsonc::value_at(&object, "gateway")
+                    == Some(serde_json::json!({ "mode": "local" }))
+                && let Some(prop) = object.get("gateway")
             {
-                if let Some(prop) = gateway.get("mode") {
-                    prop.remove();
-                }
-                jsonc::remove_if_empty(&object, "gateway");
+                prop.remove();
             }
         }
         Ok(vec![
@@ -506,15 +507,43 @@ mod tests {
             config_path(home, &none),
             PathBuf::from("/home/a/.openclaw/openclaw.json")
         );
+        // OpenClaw 只认命令行的 --profile：光设环境变量还是默认位置。
         let profile = |name: &str| (name == "OPENCLAW_PROFILE").then(|| "work".to_string());
         assert_eq!(
             config_path(home, &profile),
-            PathBuf::from("/home/a/.openclaw-work/openclaw.json")
+            PathBuf::from("/home/a/.openclaw/openclaw.json")
         );
         let state = |name: &str| (name == "OPENCLAW_STATE_DIR").then(|| "/srv/claw".to_string());
         assert_eq!(
             config_path(home, &state),
             PathBuf::from("/srv/claw/openclaw.json")
+        );
+    }
+
+    #[test]
+    fn restoring_keeps_the_gateway_mode_a_service_may_need() {
+        let before = "{\n  // 我的设置\n  agents: { defaults: { model: \"anthropic/claude-opus-4-6\" } },\n}\n";
+        let list = vec!["gpt-6.1-sol".to_string()];
+        let (next, snapshot) = Adapter
+            .apply(&docs(Some(before)), &target("gpt-6.1-sol", &list), None)
+            .unwrap();
+        let restored = Adapter
+            .restore(&docs(next[0].as_deref()), &snapshot)
+            .unwrap();
+        let restored = restored[0].as_deref().unwrap();
+        assert!(restored.contains("// 我的设置"));
+        let value = CstRootNode::parse(restored, &jsonc_parser::ParseOptions::default())
+            .unwrap()
+            .value()
+            .unwrap()
+            .to_serde_value()
+            .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "agents": { "defaults": { "model": "anthropic/claude-opus-4-6" } },
+                "gateway": { "mode": "local" },
+            })
         );
     }
 }

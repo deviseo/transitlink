@@ -56,6 +56,7 @@ const enUS: typeof zhCN = {
     configInvalid: "The config file isn't valid, so it can't be changed automatically. Please check the file first",
     configWrite: "Couldn't write the config file",
     configUnsupported: "This config file can't be changed safely (it uses advanced syntax, or the top-level config sets its own provider or default model). Please check the file first",
+    configRunFirst: "Run this tool once in a terminal so it can move its old settings, then try again",
     configBusy: "Another program is changing the config file. Try again in a moment",
     notConfigured: "This tool hasn't been set up with TransitLink yet",
     noFamilyModels: "This group has no models this tool can use. Try another group",

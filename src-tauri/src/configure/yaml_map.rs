@@ -8,7 +8,9 @@ use super::ConfigError;
 
 /// 解析成映射（空文件是空映射）。顶层不是映射时算格式有误。
 pub fn parse(text: &str) -> Result<Yaml, ConfigError> {
-    match serde_yaml::from_str::<Yaml>(text).map_err(|_| ConfigError::Invalid)? {
+    match serde_yaml::from_str::<Yaml>(super::multi::strip_bom(text))
+        .map_err(|_| ConfigError::Invalid)?
+    {
         Yaml::Null => Ok(Yaml::Mapping(Mapping::new())),
         value @ Yaml::Mapping(_) => Ok(value),
         _ => Err(ConfigError::Invalid),
@@ -36,6 +38,7 @@ pub fn from_saved(text: Option<&str>) -> Option<Yaml> {
 
 /// 把 `path` 设成 `value`（None 时删掉这一项，删完空了的上层映射也删掉）。返回新内容。
 pub fn set(text: &str, path: &[&str], value: Option<&Yaml>) -> Result<String, ConfigError> {
+    let text = super::multi::strip_bom(text);
     let mut expected = parse(text)?;
     if !change(&mut expected, path, value)? {
         return Ok(text.to_string());
