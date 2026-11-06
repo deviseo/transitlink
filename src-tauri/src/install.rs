@@ -37,8 +37,8 @@ pub enum Method {
         url: &'static str,
         shell: &'static str,
     },
-    /// Windows：PowerShell 运行官方安装脚本。
-    PowerShell { url: &'static str },
+    /// Windows：PowerShell 运行官方安装命令（`command` 是完整的 PowerShell 命令）。
+    PowerShell { command: &'static str },
     /// npm 全局安装，需要 Node.js（至少 `node_major` 版）。`extra`：额外参数。
     Npm {
         package: &'static str,
@@ -56,28 +56,30 @@ const NPM_ALLOW_SCRIPTS_OPENCODE: &[&str] = &[
 ];
 
 /// 每个工具在当前系统上的官方安装方式：
-/// - Claude Code、Codex、Grok Build：官方安装脚本，不需要 Node.js；
-/// - Gemini CLI：只有 npm（Homebrew 的版本已经停止更新）；
+/// - Claude Code、Codex、Grok Build、Kimi Code、Antigravity CLI：官方安装脚本，装的是编好的程序，
+///   不需要 Node.js；Oh My Pi 也用官方安装脚本，指定装编好的程序（不然有 bun 时会用 bun 装）；
+/// - MiniMax Code：官方安装脚本，需要时自己下载 Node.js；
+/// - Gemini CLI、DeepSeek Harness、Pi、OpenClaw：npm（OpenClaw 要 Node.js 24）；
 /// - OpenCode：macOS / Linux 用官方安装脚本；Windows 没有 PowerShell 安装脚本，用 npm。
 pub fn method(kind: ToolKind) -> Method {
     let windows = cfg!(windows);
     match kind {
         ToolKind::ClaudeCode if windows => Method::PowerShell {
-            url: "https://claude.ai/install.ps1",
+            command: "irm https://claude.ai/install.ps1 | iex",
         },
         ToolKind::ClaudeCode => Method::Unix {
             url: "https://claude.ai/install.sh",
             shell: "bash",
         },
         ToolKind::Codex if windows => Method::PowerShell {
-            url: "https://chatgpt.com/codex/install.ps1",
+            command: "irm https://chatgpt.com/codex/install.ps1 | iex",
         },
         ToolKind::Codex => Method::Unix {
             url: "https://chatgpt.com/codex/install.sh",
             shell: "sh",
         },
         ToolKind::GrokBuild if windows => Method::PowerShell {
-            url: "https://x.ai/cli/install.ps1",
+            command: "irm https://x.ai/cli/install.ps1 | iex",
         },
         ToolKind::GrokBuild => Method::Unix {
             url: "https://x.ai/cli/install.sh",
@@ -103,6 +105,46 @@ pub fn method(kind: ToolKind) -> Method {
             url: "https://opencode.ai/install",
             shell: "bash",
         },
+        // Pi 不需要安装脚本。
+        ToolKind::Pi => Method::Npm {
+            package: "@earendil-works/pi-coding-agent",
+            node_major: 22,
+            extra: &["--ignore-scripts"],
+        },
+        ToolKind::OhMyPi if windows => Method::PowerShell {
+            command: "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary",
+        },
+        ToolKind::OhMyPi => Method::Unix {
+            url: "https://omp.sh/install",
+            shell: "sh -s -- --binary",
+        },
+        ToolKind::KimiCode if windows => Method::PowerShell {
+            command: "irm https://code.kimi.com/kimi-code/install.ps1 | iex",
+        },
+        ToolKind::KimiCode => Method::Unix {
+            url: "https://code.kimi.com/kimi-code/install.sh",
+            shell: "bash",
+        },
+        ToolKind::MinimaxCode if windows => Method::PowerShell {
+            command: "irm https://filecdn.minimax.chat/public/install.ps1 | iex",
+        },
+        ToolKind::MinimaxCode => Method::Unix {
+            url: "https://filecdn.minimax.chat/public/install.sh",
+            shell: "bash",
+        },
+        // 安装时要运行它自己的脚本（装内置插件）。
+        ToolKind::OpenClaw => Method::Npm {
+            package: "openclaw",
+            node_major: 24,
+            extra: &["--ignore-scripts=false", "--allow-scripts=openclaw"],
+        },
+        ToolKind::Antigravity if windows => Method::PowerShell {
+            command: "irm https://antigravity.google/cli/install.ps1 | iex",
+        },
+        ToolKind::Antigravity => Method::Unix {
+            url: "https://antigravity.google/cli/install.sh",
+            shell: "bash",
+        },
     }
 }
 
@@ -110,7 +152,7 @@ pub fn method(kind: ToolKind) -> Method {
 pub fn display_command(method: Method, mirror: bool) -> String {
     match method {
         Method::Unix { url, shell } => format!("curl -fsSL {url} | {shell}"),
-        Method::PowerShell { url } => format!("irm {url} | iex"),
+        Method::PowerShell { command } => command.to_string(),
         Method::Npm { package, extra, .. } => npm_args(package, extra, mirror).join(" "),
     }
 }
@@ -399,7 +441,33 @@ impl Installer {
                 display,
                 npm,
                 env,
+                before,
             } => {
+                // 先运行前置的命令（例如停掉后台服务），失败了就停下。
+                if let Some((first, rest)) = before.as_deref().and_then(|argv| argv.split_first()) {
+                    let mut step = Command::new(first);
+                    step.args(rest).env("PATH", &search);
+                    emit(
+                        app,
+                        kind,
+                        &format!("$ {}", before.as_deref().unwrap_or_default().join(" ")),
+                    );
+                    match run(step, |line| emit(app, kind, line)).await {
+                        Run::Done { code: Some(0), .. } => {}
+                        Run::Done { code, .. } => {
+                            return Ok(InstallOutcome::Failed {
+                                code,
+                                command: display,
+                            });
+                        }
+                        Run::Spawn | Run::TimedOut => {
+                            return Ok(InstallOutcome::Failed {
+                                code: None,
+                                command: display,
+                            });
+                        }
+                    }
+                }
                 let mut command = Command::new(program);
                 command.args(args).envs(env);
                 let job = Job {
@@ -504,7 +572,7 @@ async fn prepare(
     mirror: bool,
 ) -> Result<Command, InstallOutcome> {
     match method {
-        Method::PowerShell { url } => {
+        Method::PowerShell { command: script } => {
             let mut command = Command::new("powershell.exe");
             command.args([
                 "-NoProfile",
@@ -512,7 +580,7 @@ async fn prepare(
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                &format!("irm {url} | iex"),
+                script,
             ]);
             Ok(command)
         }

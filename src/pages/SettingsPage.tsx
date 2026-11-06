@@ -1,13 +1,28 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, Download, LoaderCircle, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
-import { InfoRow } from "../components/ui/info-row";
+import { SectionCard } from "../components/ui/card";
+import { Segmented } from "../components/ui/segmented";
+import { Switch } from "../components/ui/switch";
 import { languages } from "../i18n";
 import { checkUpdate, getAppInfo, getAppSettings, installUpdate, setCloseToTray } from "../lib/api";
 import { errorText } from "../lib/errors";
+
+/** 设置里的一行：左边是名称和说明，右边是控件。 */
+function SettingRow({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-6 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0">
+        <p className="text-[13px] font-medium">{title}</p>
+        {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
@@ -20,46 +35,44 @@ export function SettingsPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <PageHeader title={t("settings.title")} />
-      <Card>
-        <h2 className="font-medium">{t("settings.language")}</h2>
-        <div className="mt-3 flex gap-2">
-          {languages.map((language) => (
-            <Button
-              key={language.code}
-              size="sm"
-              variant={i18n.language === language.code ? "primary" : "secondary"}
-              aria-pressed={i18n.language === language.code}
-              onClick={() => void i18n.changeLanguage(language.code)}
-            >
-              {language.label}
-            </Button>
-          ))}
-        </div>
-        {settings.data && (
-          <label className="mt-4 flex items-start gap-2.5 border-t border-border pt-4 text-sm">
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 accent-brand"
-              checked={settings.data.closeToTray}
-              disabled={closeToTray.isPending}
-              onChange={(event) => closeToTray.mutate(event.target.checked)}
+      <SectionCard title={t("settings.general")}>
+        <div className="divide-y divide-border/70">
+          <SettingRow title={t("settings.language")}>
+            <Segmented
+              label={t("settings.language")}
+              value={i18n.language}
+              onChange={(code) => void i18n.changeLanguage(code)}
+              options={languages.map((language) => ({ value: language.code, label: language.label }))}
             />
-            {t("settings.closeToTray")}
-          </label>
-        )}
-        {closeToTray.isError && <p className="mt-2 text-sm text-danger">{errorText(t, closeToTray.error)}</p>}
-      </Card>
-      <Card>
-        <h2 className="font-medium">{t("settings.about")}</h2>
-        <dl className="mt-3 space-y-2 text-sm">
-          <InfoRow label={t("settings.version")} value={info?.version} />
-          <InfoRow label={t("settings.platform")} value={info?.platform} />
-          <InfoRow label={t("settings.dataDir")} value={info?.dataDir} mono />
-        </dl>
-        <UpdateCheck />
-      </Card>
+          </SettingRow>
+          {settings.data && (
+            <SettingRow title={t("settings.closeToTrayTitle")} description={t("settings.closeToTray")}>
+              <Switch
+                label={t("settings.closeToTrayTitle")}
+                checked={settings.data.closeToTray}
+                disabled={closeToTray.isPending}
+                onChange={(checked) => closeToTray.mutate(checked)}
+              />
+            </SettingRow>
+          )}
+        </div>
+        {closeToTray.isError && <p className="mt-2 text-[13px] text-danger">{errorText(t, closeToTray.error)}</p>}
+      </SectionCard>
+      <SectionCard title={t("settings.about")}>
+        <div className="divide-y divide-border/70">
+          <SettingRow title={t("settings.version")} description={info ? `TransitLink ${info.version}` : undefined}>
+            <UpdateCheck />
+          </SettingRow>
+          <SettingRow title={t("settings.platform")}>
+            <span className="text-[13px] text-muted-foreground">{info?.platform ?? "—"}</span>
+          </SettingRow>
+          <SettingRow title={t("settings.dataDir")}>
+            <code className="font-mono text-xs text-muted-foreground">{info?.dataDir ?? "—"}</code>
+          </SettingRow>
+        </div>
+      </SectionCard>
     </div>
   );
 }
@@ -76,18 +89,16 @@ function UpdateCheck() {
   const install = useMutation({ mutationFn: installUpdate });
 
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-4 text-sm">
-      <Button variant="secondary" size="sm" onClick={() => check.mutate()} disabled={check.isPending || install.isPending}>
-        {check.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
-        {check.isPending ? t("update.checking") : t("update.check")}
-      </Button>
+    <div className="flex flex-wrap items-center justify-end gap-2 text-[13px]">
       {check.isSuccess && check.data === null && (
         <span className="flex items-center gap-1.5 text-success">
           <CircleCheck className="h-4 w-4" aria-hidden />
           {t("update.upToDate")}
         </span>
       )}
-      {check.data && (
+      {check.isError && <span className="text-danger">{errorText(t, check.error)}</span>}
+      {install.isError && <span className="text-danger">{errorText(t, install.error)}</span>}
+      {check.data ? (
         <>
           <span>{t("update.found", { version: check.data.version })}</span>
           <Button size="sm" onClick={() => install.mutate()} disabled={install.isPending}>
@@ -95,9 +106,12 @@ function UpdateCheck() {
             {install.isPending ? t("update.installing") : t("update.install")}
           </Button>
         </>
+      ) : (
+        <Button variant="secondary" size="sm" onClick={() => check.mutate()} disabled={check.isPending || install.isPending}>
+          {check.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
+          {check.isPending ? t("update.checking") : t("update.check")}
+        </Button>
       )}
-      {check.isError && <span className="text-danger">{errorText(t, check.error)}</span>}
-      {install.isError && <span className="text-danger">{errorText(t, install.error)}</span>}
     </div>
   );
 }

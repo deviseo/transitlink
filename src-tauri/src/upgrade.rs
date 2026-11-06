@@ -34,6 +34,13 @@ pub fn npm_package(kind: ToolKind, local: Option<&str>) -> &'static str {
         }
         ToolKind::OpenCode => "opencode-ai",
         ToolKind::DeepseekHarness => "@deepseek-ai/dsh",
+        ToolKind::Pi => "@earendil-works/pi-coding-agent",
+        ToolKind::OhMyPi => "@oh-my-pi/pi-coding-agent",
+        ToolKind::KimiCode => "@moonshot-ai/kimi-code",
+        ToolKind::MinimaxCode => "@minimax-ai/code",
+        ToolKind::OpenClaw => "openclaw",
+        // 没有 npm 包（最新版本另外查，见 `latest`）。
+        ToolKind::Antigravity => "",
     }
 }
 
@@ -46,6 +53,12 @@ pub fn npm_packages(kind: ToolKind) -> &'static [&'static str] {
         ToolKind::GrokBuild => &["@xai-official/grok"],
         ToolKind::OpenCode => &["opencode-ai", "@opencode/cli"],
         ToolKind::DeepseekHarness => &["@deepseek-ai/dsh"],
+        ToolKind::Pi => &["@earendil-works/pi-coding-agent"],
+        ToolKind::OhMyPi => &["@oh-my-pi/pi-coding-agent"],
+        ToolKind::KimiCode => &["@moonshot-ai/kimi-code"],
+        ToolKind::MinimaxCode => &["@minimax-ai/code"],
+        ToolKind::OpenClaw => &["openclaw"],
+        ToolKind::Antigravity => &[],
     }
 }
 
@@ -61,7 +74,22 @@ fn npm_extra(kind: ToolKind, package: &str) -> Vec<String> {
             format!("--allow-scripts={package}"),
         ],
         ToolKind::DeepseekHarness => vec!["--engine-strict".into()],
-        ToolKind::Codex | ToolKind::GeminiCli => Vec::new(),
+        ToolKind::Pi => vec!["--ignore-scripts".into()],
+        // 它的安装脚本要放好 SQLite 的原生模块。
+        ToolKind::MinimaxCode => vec![
+            "--ignore-scripts=false".into(),
+            "--include=optional".into(),
+            "--allow-scripts=@minimax-ai/code,better-sqlite3".into(),
+        ],
+        ToolKind::OpenClaw => vec![
+            "--ignore-scripts=false".into(),
+            "--allow-scripts=openclaw".into(),
+        ],
+        ToolKind::Codex
+        | ToolKind::GeminiCli
+        | ToolKind::OhMyPi
+        | ToolKind::KimiCode
+        | ToolKind::Antigravity => Vec::new(),
     }
 }
 
@@ -86,8 +114,39 @@ pub struct ToolLatest {
     pub up_to_date: bool,
 }
 
+/// Antigravity CLI 没有 npm 包：问它自己的更新服务（和它的安装脚本、`agy update` 用的一样）。
+async fn antigravity_latest(http: &Http) -> Option<String> {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "linux" => "linux",
+        "windows" => "windows",
+        _ => return None,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        _ => return None,
+    };
+    let url = format!(
+        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{os}_{arch}.json"
+    );
+    let request = http.get(&url).timeout(std::time::Duration::from_secs(10));
+    let response = http.send(request).await.ok()?;
+    (response.status == 200).then_some(()).and_then(|()| {
+        response
+            .body
+            .as_ref()?
+            .get("version")?
+            .as_str()
+            .map(str::to_string)
+    })
+}
+
 /// npm 上的最新版本：先问官方源，连不上再问国内镜像。
 pub async fn latest(http: &Http, kind: ToolKind, local: Option<&str>) -> Option<String> {
+    if kind == ToolKind::Antigravity {
+        return antigravity_latest(http).await;
+    }
     let package = npm_package(kind, local);
     let encoded = package.replacen('/', "%2F", 1);
     for registry in ["https://registry.npmjs.org", NPM_MIRROR] {
@@ -290,7 +349,26 @@ pub fn plan(
     let lower = path_text(&real).to_ascii_lowercase();
     let package = npm_package(kind, local);
     let spec = version_spec(target);
+    let own = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let name = binary
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Some(Plan::Run {
+            program: binary.to_path_buf(),
+            display: format!("{name} {}", args.join(" ")),
+            args,
+            npm: false,
+            env: Vec::new(),
+        })
+    };
 
+    // Antigravity CLI：怎么装的都用它自己的 `agy update`（Homebrew 的 cask 标了自动更新，
+    // `brew upgrade` 会跳过或者装回 cask 记录的版本）。
+    if kind == ToolKind::Antigravity {
+        return own(&["update"]);
+    }
     // 桌面版带的命令：macOS 在 `.app` 里，Windows、Linux 在安装目录的 `resources` 里。
     if kind == ToolKind::DeepseekHarness
         && (lower.contains(".app/") || lower.contains("/resources/"))
@@ -313,6 +391,13 @@ pub fn plan(
             env: vec![(key.to_string(), value.to_string())],
         });
     }
+    // Oh My Pi、OpenClaw 自己认得是用 npm、bun 还是编好的程序装的，按原来的办法升级
+    // （OpenClaw 还会顺便重启它的后台服务）。
+    match kind {
+        ToolKind::OhMyPi => return own(&["update"]),
+        ToolKind::OpenClaw => return own(&["update", "--yes"]),
+        _ => {}
+    }
     let command = |prefix: &str| {
         Some(Plan::Manual {
             command: Some(format!("{prefix} {package}@{spec}")),
@@ -326,24 +411,17 @@ pub fn plan(
         Some(Manager::Volta) => return command("volta install"),
         None => {}
     }
-    let own = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        let name = binary
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        Some(Plan::Run {
-            program: binary.to_path_buf(),
-            display: format!("{name} {}", args.join(" ")),
-            args,
-            npm: false,
-            env: Vec::new(),
-        })
-    };
     match kind {
-        ToolKind::ClaudeCode | ToolKind::GrokBuild => own(&["update"]),
+        ToolKind::ClaudeCode | ToolKind::GrokBuild | ToolKind::Pi => own(&["update"]),
         ToolKind::OpenCode => own(&["upgrade"]),
+        // 只下载好新版本，下次运行时换上（检测版本时就会运行一次）。
+        ToolKind::KimiCode => own(&["upgrade", "--yes"]),
         ToolKind::Codex => Some(Plan::Reinstall(install::method(kind))),
+        // `mcode update` 不在终端里运行时什么都不装：重新运行官方安装脚本（已经是最新时很快就结束）。
+        ToolKind::MinimaxCode => Some(Plan::Reinstall(install::method(kind))),
+        ToolKind::OhMyPi => own(&["update"]),
+        ToolKind::OpenClaw => own(&["update", "--yes"]),
+        ToolKind::Antigravity => own(&["update"]),
         // 只能用 npm 装的工具，装在别处时（例如单独下载的程序）用 npm 装一份新的。
         ToolKind::GeminiCli | ToolKind::DeepseekHarness => {
             npm_plan(kind, package, &spec, binary, mirror, search, home)

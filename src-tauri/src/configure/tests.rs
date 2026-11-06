@@ -94,6 +94,7 @@ fn status(kind: ToolKind, fixture: &Fixture) -> ToolStatus {
         config_path: path.display().to_string(),
         install_command: String::new(),
         install_npm: false,
+        configurable: kind.configurable(),
     }
 }
 

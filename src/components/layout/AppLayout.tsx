@@ -43,12 +43,16 @@ function NavItemLink({ item, badge = 0 }: { item: NavItem; badge?: number }) {
       end={end}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
-          isActive ? "bg-brand font-medium text-brand-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          "group flex h-9 items-center gap-3 rounded-lg px-3 text-[13px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60",
+          isActive
+            ? "bg-surface font-medium text-foreground shadow-[0_1px_2px_rgba(16,24,40,0.06)] ring-1 ring-border/70"
+            : "text-muted-foreground hover:bg-surface/60 hover:text-foreground",
         )
       }
     >
-      <Icon className="h-4 w-4" aria-hidden />
+      {({ isActive }) => (
+        <>
+      <Icon className={cn("h-4 w-4", isActive ? "text-brand" : "")} aria-hidden />
       {t(`nav.${label}`)}
       {badge > 0 && (
         <>
@@ -57,6 +61,8 @@ function NavItemLink({ item, badge = 0 }: { item: NavItem; badge?: number }) {
             {badge > 99 ? "99+" : badge}
           </span>
           <span className="sr-only">{t("tickets.unreadCount", { count: badge })}</span>
+        </>
+      )}
         </>
       )}
     </NavLink>
@@ -82,23 +88,26 @@ export function AppLayout() {
 
   return (
     <SiteSwitchProvider>
-      <div className="flex h-full">
-        <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-card">
+      <div className="flex h-full bg-background">
+        <aside className="flex w-60 shrink-0 flex-col">
           <SiteSwitcher unread={unread} />
-          <nav className="flex-1 space-y-1 px-3 py-2">
+          <nav className="flex-1 space-y-0.5 px-3 py-2">
             {items.map((item) => (
               <NavItemLink key={item.to} item={item} badge={item.label === "tickets" && site ? (unread.get(site.id) ?? 0) : 0} />
             ))}
           </nav>
-          <div className="space-y-1 border-t border-border px-3 py-2">
-            <NavItemLink item={settingsItem} />
+          <div className="flex items-center gap-2 px-3 pb-3">
+            <div className="flex-1">
+              <NavItemLink item={settingsItem} />
+            </div>
+            {info && <span className="pr-2 text-[11px] text-muted-foreground tabular-nums">v{info.version}</span>}
           </div>
-          {info && <p className="px-5 pb-4 pt-1 text-xs text-muted-foreground">v{info.version}</p>}
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        {/* 主内容放在一块浮起的面板上，和侧边栏分开。 */}
+        <main className="my-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border/70 bg-surface shadow-[0_1px_2px_rgba(16,24,40,0.04),0_2px_8px_rgba(16,24,40,0.04)]">
           {!inDesktop && (
-            <div className="flex items-center gap-2 border-b border-border bg-muted px-8 py-2 text-xs text-muted-foreground" role="status">
+            <div className="flex items-center gap-2 border-b border-border/70 bg-muted/60 px-8 py-1.5 text-xs text-muted-foreground" role="status">
               <Info className="h-3.5 w-3.5 shrink-0" aria-hidden />
               {t("common.previewMode")}
             </div>
@@ -107,8 +116,10 @@ export function AppLayout() {
           <UpdateBanner />
           <TrayEvents />
           <LinkEvents />
-          <div className="mx-auto max-w-4xl px-8 py-8">
-            <Outlet />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-5xl px-8 py-7">
+              <Outlet />
+            </div>
           </div>
         </main>
       </div>

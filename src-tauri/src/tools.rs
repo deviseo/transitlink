@@ -19,17 +19,36 @@ pub enum ToolKind {
     #[serde(rename = "opencode")]
     OpenCode,
     DeepseekHarness,
+    Pi,
+    OhMyPi,
+    KimiCode,
+    MinimaxCode,
+    #[serde(rename = "openclaw")]
+    OpenClaw,
+    Antigravity,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 12] = [
         ToolKind::ClaudeCode,
         ToolKind::Codex,
         ToolKind::GeminiCli,
         ToolKind::GrokBuild,
         ToolKind::OpenCode,
         ToolKind::DeepseekHarness,
+        ToolKind::Pi,
+        ToolKind::OhMyPi,
+        ToolKind::KimiCode,
+        ToolKind::MinimaxCode,
+        ToolKind::OpenClaw,
+        ToolKind::Antigravity,
     ];
+
+    /// 能一键连接站点。Antigravity CLI 只能用 Google 账号或 Gemini 官方格式的接口，Key 也只能放在
+    /// 环境变量里，没法写进配置。
+    pub fn configurable(self) -> bool {
+        self != ToolKind::Antigravity
+    }
 
     fn binary(self) -> &'static str {
         match self {
@@ -39,6 +58,12 @@ impl ToolKind {
             ToolKind::GrokBuild => "grok",
             ToolKind::OpenCode => "opencode",
             ToolKind::DeepseekHarness => "dsh",
+            ToolKind::Pi => "pi",
+            ToolKind::OhMyPi => "omp",
+            ToolKind::KimiCode => "kimi",
+            ToolKind::MinimaxCode => "mcode",
+            ToolKind::OpenClaw => "openclaw",
+            ToolKind::Antigravity => "agy",
         }
     }
 
@@ -51,6 +76,12 @@ impl ToolKind {
             ToolKind::GrokBuild => "grokBuild",
             ToolKind::OpenCode => "opencode",
             ToolKind::DeepseekHarness => "deepseekHarness",
+            ToolKind::Pi => "pi",
+            ToolKind::OhMyPi => "ohMyPi",
+            ToolKind::KimiCode => "kimiCode",
+            ToolKind::MinimaxCode => "minimaxCode",
+            ToolKind::OpenClaw => "openclaw",
+            ToolKind::Antigravity => "antigravity",
         }
     }
 
@@ -63,6 +94,12 @@ impl ToolKind {
             ToolKind::GrokBuild => "grok-build",
             ToolKind::OpenCode => "opencode",
             ToolKind::DeepseekHarness => "deepseek-harness",
+            ToolKind::Pi => "pi",
+            ToolKind::OhMyPi => "oh-my-pi",
+            ToolKind::KimiCode => "kimi-code",
+            ToolKind::MinimaxCode => "minimax-code",
+            ToolKind::OpenClaw => "openclaw",
+            ToolKind::Antigravity => "antigravity",
         }
     }
 
@@ -75,6 +112,12 @@ impl ToolKind {
             ToolKind::GrokBuild => "TransitLink Grok Build",
             ToolKind::OpenCode => "TransitLink OpenCode",
             ToolKind::DeepseekHarness => "TransitLink DeepSeek Harness",
+            ToolKind::Pi => "TransitLink Pi",
+            ToolKind::OhMyPi => "TransitLink Oh My Pi",
+            ToolKind::KimiCode => "TransitLink Kimi Code",
+            ToolKind::MinimaxCode => "TransitLink MiniMax Code",
+            ToolKind::OpenClaw => "TransitLink OpenClaw",
+            ToolKind::Antigravity => "TransitLink Antigravity",
         }
     }
 
@@ -116,6 +159,18 @@ impl ToolKind {
             ToolKind::DeepseekHarness => {
                 crate::configure::dsh::profile_path(&crate::configure::dsh::home(home, env), "web")
             }
+            // 只显示用：Antigravity CLI 没法一键连接站点。
+            ToolKind::Antigravity => dir("GEMINI_CLI_HOME", home.to_path_buf())
+                .join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json"),
+            // 几个文件一起改的工具：显示第一个文件。
+            _ => crate::configure::multi(self)
+                .and_then(|adapter: &dyn crate::configure::multi::MultiFile| {
+                    adapter.files(home, env).into_iter().next()
+                })
+                .map(|(path, _)| path)
+                .unwrap_or_else(|| home.to_path_buf()),
         }
     }
 }
@@ -151,6 +206,8 @@ pub struct ToolStatus {
     pub install_command: String,
     /// 用 npm 安装（需要 Node.js，可以换国内镜像）。
     pub install_npm: bool,
+    /// 能一键连接站点（Antigravity CLI 不能）。
+    pub configurable: bool,
 }
 
 /// 检测所有支持的工具。
@@ -270,6 +327,7 @@ fn detect(
             crate::install::method(kind),
             crate::install::Method::Npm { .. }
         ),
+        configurable: kind.configurable(),
     }
 }
 
@@ -282,9 +340,13 @@ pub fn search_path(home: &Path, inherited: Option<OsString>) -> OsString {
     let mut extra = vec![
         home.join(".local/bin"),
         home.join(".claude/local"),
-        // Grok Build、OpenCode 官方安装脚本的位置。
+        // Grok Build、OpenCode、Pi、Kimi Code、MiniMax Code、OpenClaw 官方安装脚本的位置。
         home.join(".grok/bin"),
         home.join(".opencode/bin"),
+        home.join(".pi/agent/bin"),
+        home.join(".kimi-code/bin"),
+        home.join(".minimax-code/bin"),
+        home.join(".openclaw/bin"),
         home.join(".npm-global/bin"),
         home.join(".volta/bin"),
         home.join(".bun/bin"),
@@ -299,10 +361,15 @@ pub fn search_path(home: &Path, inherited: Option<OsString>) -> OsString {
         if let Some(appdata) = std::env::var_os("APPDATA") {
             extra.push(PathBuf::from(appdata).join("npm"));
         }
-        // Codex 官方安装脚本在 Windows 上的安装位置。
+        // Codex、Oh My Pi、Antigravity CLI 官方安装脚本在 Windows 上的安装位置。
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            extra.push(PathBuf::from(local).join("Programs\\OpenAI\\Codex\\bin"));
+            let local = PathBuf::from(local);
+            extra.push(local.join("Programs\\OpenAI\\Codex\\bin"));
+            extra.push(local.join("omp"));
+            extra.push(local.join("agy\\bin"));
         }
+        // MiniMax Code 在 Windows 上的启动脚本在安装目录本身。
+        extra.push(home.join(".minimax-code"));
     }
     if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
         let mut versions: Vec<PathBuf> = entries
@@ -357,7 +424,8 @@ fn read_version(binary: &Path, search: &OsString) -> Option<String> {
 /// 取输出里的第一个版本号，例如 "2.0.14 (Claude Code)" → "2.0.14"，"codex-cli 0.149.0" → "0.149.0"。
 pub fn parse_version(output: &str) -> Option<String> {
     output
-        .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ','))
+        // Oh My Pi 打印 `omp/18.16.0`，OpenClaw 打印 `OpenClaw 2026.11.1 (4ffdd20)`。
+        .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '/'))
         .map(|token| token.trim_start_matches('v'))
         .find(|token| {
             let mut parts = token.split('.');

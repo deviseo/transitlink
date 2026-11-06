@@ -10,9 +10,17 @@ pub mod dsh;
 pub(crate) mod files;
 pub mod gemini;
 pub mod grok;
+mod jsonc;
+pub mod kimi;
+pub mod mcode;
+pub(crate) mod multi;
+pub mod omp;
+pub mod openclaw;
 pub mod opencode;
+pub mod pi;
 pub mod probe;
 mod state;
+mod yaml_map;
 
 use std::path::{Path, PathBuf};
 
@@ -138,15 +146,27 @@ pub struct ApplyOutcome {
 
 /// 配置文件里现在的连接。
 #[derive(Debug, Clone, Default)]
-struct Connection {
-    base_url: Option<String>,
-    token: Option<String>,
-    model: Option<String>,
-    provider: Option<String>,
+pub(crate) struct Connection {
+    pub(crate) base_url: Option<String>,
+    pub(crate) token: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) provider: Option<String>,
     /// 请求发到我们写的服务商（Codex、Grok Build、OpenCode 可能被用户换成别的服务商）。
-    ours: bool,
+    pub(crate) ours: bool,
     /// 用户自己配置了别的服务（没用 TransitLink 配置时才看）。
-    other: bool,
+    pub(crate) other: bool,
+}
+
+/// 用通用的多文件写法的工具（见 `multi`）。
+pub fn multi(kind: ToolKind) -> Option<&'static dyn multi::MultiFile> {
+    match kind {
+        ToolKind::Pi => Some(&pi::Adapter),
+        ToolKind::OhMyPi => Some(&omp::Adapter),
+        ToolKind::KimiCode => Some(&kimi::Adapter),
+        ToolKind::MinimaxCode => Some(&mcode::Adapter),
+        ToolKind::OpenClaw => Some(&openclaw::Adapter),
+        _ => None,
+    }
 }
 
 /// 按工具的写法读出现在的连接。
@@ -197,8 +217,14 @@ fn read_connection(kind: ToolKind, text: Option<&str>) -> Result<Connection, Con
                 provider: current.default,
             }
         }
-        // 几个文件，由 Configurator::connection 单独读。
-        ToolKind::DeepseekHarness => Connection::default(),
+        // 几个文件，由 Configurator::connection 单独读；Antigravity CLI 不能一键连接。
+        ToolKind::DeepseekHarness
+        | ToolKind::Pi
+        | ToolKind::OhMyPi
+        | ToolKind::KimiCode
+        | ToolKind::MinimaxCode
+        | ToolKind::OpenClaw
+        | ToolKind::Antigravity => Connection::default(),
         ToolKind::OpenCode => {
             let current = opencode::read(text)?;
             let ours = current.provider.as_deref() == Some(opencode::PROVIDER_ID);
@@ -251,7 +277,18 @@ impl Configurator {
         dsh::home(&self.home, &*self.env)
     }
 
+    /// 读出多文件工具的这几个文件。
+    fn multi_docs(&self, adapter: &dyn multi::MultiFile) -> Result<Vec<multi::Doc>, ConfigError> {
+        multi::read(adapter.files(&self.home, &*self.env))
+    }
+
     fn connection(&self, kind: ToolKind) -> Result<Connection, ConfigError> {
+        if !kind.configurable() {
+            return Ok(Connection::default());
+        }
+        if let Some(adapter) = multi(kind) {
+            return adapter.read(&self.multi_docs(adapter)?);
+        }
         if kind == ToolKind::DeepseekHarness {
             let current = dsh::read(&self.dsh_home())?;
             let ours = current.provider.as_deref() == Some(dsh::PROVIDER_ID);
@@ -322,6 +359,7 @@ impl Configurator {
         let user_group = account.as_ref().and_then(|account| account.group.clone());
         let tools = ToolKind::ALL
             .iter()
+            .filter(|kind| kind.configurable())
             .map(|kind| {
                 let site_recommend = operator_recommend(site.config.as_ref(), *kind);
                 let (recommended_group, matched) = recommend(
@@ -359,11 +397,24 @@ impl Configurator {
         model: Option<&str>,
     ) -> Result<ApplyOutcome, ConfigError> {
         let _guard = self.lock.lock().await;
+        if !kind.configurable() {
+            return Err(ConfigError::Unsupported(kind.key_name().into()));
+        }
         let site = accounts.site(site_id)?;
         let path = self.config_path(kind);
         // 先确认配置文件能改，免得建好 Key 才发现写不进去。
         let text = files::read(&path)?;
-        if kind == ToolKind::DeepseekHarness {
+        if let Some(adapter) = multi(kind) {
+            let docs = self.multi_docs(adapter)?;
+            let probe = multi::Target {
+                site_name: "",
+                base_url: "https://relay.example.com",
+                token: "check",
+                model: "check",
+                models: &[],
+            };
+            adapter.apply(&docs, &probe, None)?;
+        } else if kind == ToolKind::DeepseekHarness {
             dsh::check(&self.dsh_home())?;
         } else {
             read_connection(kind, text.as_deref()).map_err(|error| error.at(&path))?;
@@ -395,7 +446,14 @@ impl Configurator {
         let previous = self.state.get(kind);
         let now = crate::clock::now_secs();
         let backups = self.backup_dir(kind);
-        if kind == ToolKind::DeepseekHarness {
+        if let Some(adapter) = multi(kind) {
+            multi::backup(
+                &self.multi_docs(adapter)?,
+                &backups,
+                now,
+                previous.is_none(),
+            )?;
+        } else if kind == ToolKind::DeepseekHarness {
             for (file, name) in dsh::files(&self.dsh_home()) {
                 files::backup_named(&file, &name, &backups, now, previous.is_none())?;
             }
@@ -403,6 +461,31 @@ impl Configurator {
             files::backup(&path, &backups, now, previous.is_none())?;
         }
         let snapshot = match kind {
+            ToolKind::Pi
+            | ToolKind::OhMyPi
+            | ToolKind::KimiCode
+            | ToolKind::MinimaxCode
+            | ToolKind::OpenClaw => {
+                let adapter = multi(kind).expect("multi-file tool");
+                let docs = self.multi_docs(adapter)?;
+                if adapter.busy(&docs) {
+                    return Err(ConfigError::Busy);
+                }
+                let chosen = model.as_deref().unwrap_or_default();
+                let family = adapter.models(kind, chosen, &ids);
+                let target = multi::Target {
+                    site_name: &site.info.name,
+                    base_url: &base_url,
+                    token: &key.key,
+                    model: chosen,
+                    models: &family,
+                };
+                let previous = previous.as_ref().map(|applied| &applied.snapshot);
+                let (next, snapshot) = adapter.apply(&docs, &target, previous)?;
+                multi::write(&docs, &next)?;
+                Ok(snapshot)
+            }
+            ToolKind::Antigravity => unreachable!("not configurable"),
             ToolKind::ClaudeCode => {
                 let previous = previous.as_ref().map(|applied| {
                     serde_json::from_value::<claude::Snapshot>(applied.snapshot.clone())
@@ -610,6 +693,9 @@ impl Configurator {
         let ids = probe::list_models(&self.http, &base_url, &token)
             .await
             .map_err(ConfigError::Test)?;
+        if let Some(adapter) = multi(kind) {
+            return Ok(adapter.models(kind, &connection.model.unwrap_or_default(), &ids));
+        }
         if kind == ToolKind::OpenCode {
             // 一个服务商只用一种接口：现在用的是 Claude 模型，就只能换别的 Claude 模型，反之亦然。
             let current = connection.model.unwrap_or_default();
@@ -626,6 +712,22 @@ impl Configurator {
     pub async fn set_model(&self, kind: ToolKind, model: Option<&str>) -> Result<(), ConfigError> {
         let _guard = self.lock.lock().await;
         let mut applied = self.state.get(kind).ok_or(ConfigError::NotConfigured)?;
+        if let Some(adapter) = multi(kind) {
+            let model = model.ok_or(ConfigError::Test(TestResult::NoFamilyModels { models: 0 }))?;
+            let docs = self.multi_docs(adapter)?;
+            if adapter.busy(&docs) {
+                return Err(ConfigError::Busy);
+            }
+            multi::backup(
+                &docs,
+                &self.backup_dir(kind),
+                crate::clock::now_secs(),
+                false,
+            )?;
+            let next = adapter.set_model(&docs, model)?;
+            multi::write(&docs, &next)?;
+            return self.remember_model(kind, &mut applied, Some(model));
+        }
         if kind == ToolKind::DeepseekHarness {
             let model = model.ok_or(ConfigError::Test(TestResult::NoFamilyModels { models: 0 }))?;
             let home = self.dsh_home();
@@ -647,7 +749,16 @@ impl Configurator {
             (ToolKind::GeminiCli, Some(model)) => gemini::set_model(text.as_deref(), model),
             (ToolKind::GrokBuild, Some(model)) => grok::set_model(text.as_deref(), model),
             (ToolKind::OpenCode, Some(model)) => opencode::set_model(text.as_deref(), model),
-            (ToolKind::DeepseekHarness, Some(_)) => unreachable!("handled above"),
+            (
+                ToolKind::DeepseekHarness
+                | ToolKind::Pi
+                | ToolKind::OhMyPi
+                | ToolKind::KimiCode
+                | ToolKind::MinimaxCode
+                | ToolKind::OpenClaw
+                | ToolKind::Antigravity,
+                Some(_),
+            ) => unreachable!("handled above"),
         }
         .map_err(|error| error.at(&path))?;
         let now = crate::clock::now_secs();
@@ -731,6 +842,22 @@ impl Configurator {
     pub async fn restore(&self, kind: ToolKind) -> Result<(), ConfigError> {
         let _guard = self.lock.lock().await;
         let applied = self.state.get(kind).ok_or(ConfigError::NotConfigured)?;
+        if let Some(adapter) = multi(kind) {
+            let docs = self.multi_docs(adapter)?;
+            if adapter.busy(&docs) {
+                return Err(ConfigError::Busy);
+            }
+            multi::backup(
+                &docs,
+                &self.backup_dir(kind),
+                crate::clock::now_secs(),
+                false,
+            )?;
+            let next = adapter.restore(&docs, &applied.snapshot)?;
+            multi::write(&docs, &next)?;
+            self.state.remove(kind)?;
+            return Ok(());
+        }
         if kind == ToolKind::DeepseekHarness {
             let snapshot: dsh::Snapshot =
                 serde_json::from_value(applied.snapshot).unwrap_or_default();
@@ -774,7 +901,13 @@ impl Configurator {
                     serde_json::from_value(applied.snapshot).unwrap_or_default();
                 opencode::restore(text.as_deref(), &snapshot)
             }
-            ToolKind::DeepseekHarness => unreachable!("handled above"),
+            ToolKind::DeepseekHarness
+            | ToolKind::Pi
+            | ToolKind::OhMyPi
+            | ToolKind::KimiCode
+            | ToolKind::MinimaxCode
+            | ToolKind::OpenClaw
+            | ToolKind::Antigravity => unreachable!("handled above"),
         }
         .map_err(|error| error.at(&path))?;
         files::backup(
@@ -832,13 +965,18 @@ fn recommend(
     }
     // OpenCode 什么模型都能用：优先 Claude 分组，其次 GPT 分组。
     // DeepSeek Harness 优先 DeepSeek 分组，其次和 OpenCode 一样。
+    // Pi、Oh My Pi、OpenClaw 也是什么模型都能用；Kimi Code、MiniMax Code 优先自家模型的分组。
     let wanted: &[ToolKind] = match kind {
-        ToolKind::OpenCode => &[ToolKind::ClaudeCode, ToolKind::Codex],
+        ToolKind::OpenCode | ToolKind::Pi | ToolKind::OhMyPi | ToolKind::OpenClaw => {
+            &[ToolKind::ClaudeCode, ToolKind::Codex]
+        }
         ToolKind::DeepseekHarness => &[
             ToolKind::DeepseekHarness,
             ToolKind::ClaudeCode,
             ToolKind::Codex,
         ],
+        ToolKind::KimiCode => &[ToolKind::KimiCode, ToolKind::ClaudeCode, ToolKind::Codex],
+        ToolKind::MinimaxCode => &[ToolKind::MinimaxCode, ToolKind::ClaudeCode, ToolKind::Codex],
         _ => std::slice::from_ref(&kind),
     };
     for candidate in wanted {
@@ -865,8 +1003,12 @@ fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool 
                 ToolKind::GeminiCli => &["gemini"],
                 ToolKind::GrokBuild => &["grok"],
                 ToolKind::OpenCode => &["anthropic", "openai"],
-                // 只认 DeepSeek 分组；Claude、GPT 分组在 recommend 里按顺序再找。
+                // 只认自家模型的分组；Claude、GPT 分组在 recommend 里按顺序再找。
                 ToolKind::DeepseekHarness => &["deepseek"],
+                ToolKind::KimiCode => &["kimi"],
+                ToolKind::MinimaxCode => &["minimax"],
+                ToolKind::Antigravity => &["antigravity", "gemini"],
+                ToolKind::Pi | ToolKind::OhMyPi | ToolKind::OpenClaw => &["anthropic", "openai"],
             };
             group
                 .platform
@@ -892,6 +1034,13 @@ fn fits_group(kind: ToolKind, platform: Platform, group: &GroupSummary) -> bool 
                         || fits_group(ToolKind::Codex, platform, group)
                 }
                 ToolKind::DeepseekHarness => text.contains("deepseek"),
+                ToolKind::KimiCode => text.contains("kimi") || text.contains("moonshot"),
+                ToolKind::MinimaxCode => text.contains("minimax"),
+                ToolKind::Antigravity => text.contains("gemini") || text.contains("antigravity"),
+                ToolKind::Pi | ToolKind::OhMyPi | ToolKind::OpenClaw => {
+                    fits_group(ToolKind::ClaudeCode, platform, group)
+                        || fits_group(ToolKind::Codex, platform, group)
+                }
             }
         }
     }

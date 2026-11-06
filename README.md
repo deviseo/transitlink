@@ -19,8 +19,8 @@
 ## 当前进度
 
 - [x] 项目骨架：Tauri 2 + React + TypeScript；中英文界面；浅色、深色跟随系统
-- [x] 检测本机的编程工具（Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、DeepSeek Harness）：安装位置、版本、配置文件位置
-- [x] 一键安装工具：运行官方的安装命令（Gemini CLI、DeepSeek Harness 用 npm，需要 Node.js），显示安装过程；跟随系统代理，npm 可以换国内镜像；装好后终端里还找不到命令时，提示怎么加到 PATH
+- [x] 检测本机的编程工具（Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、DeepSeek Harness、Pi、Oh My Pi、Kimi Code、MiniMax Code、OpenClaw、Antigravity CLI）：安装位置、版本、配置文件位置
+- [x] 一键安装工具：运行官方的安装命令（Gemini CLI、DeepSeek Harness、Pi、OpenClaw 用 npm，需要 Node.js，OpenClaw 要 24 以上），显示安装过程；跟随系统代理，npm 可以换国内镜像；装好后终端里还找不到命令时，提示怎么加到 PATH
 - [x] 检查新版本、一键升级：按工具是怎么装的选升级办法——Homebrew 装的用 `brew upgrade`，npm 装的用同一处的 npm 装查到的那个版本（国内镜像落后时不会装回旧版），官方脚本装的用工具自带的升级命令（Codex 重新运行官方安装）；pnpm、bun、Yarn、Volta 装的给出对应的命令请你在终端里运行，DeepSeek Harness 桌面版带的命令请在桌面版里更新
 - [x] 一键卸载：只卸载程序，配置文件和使用记录都留着。只用当初装它的那个包管理器卸载（Homebrew 只卸认得的包，npm 要核对全局目录里确实装着这个包），官方脚本装的只删命令和它指向的程序，不删目录；卸载前先给你看要运行的命令或要删的文件，认不出是怎么装的就不动，告诉你怎么自己卸
 - [x] 注册 `transitlink://` 专属链接协议，单实例运行
@@ -28,7 +28,7 @@
 - [x] 账号密码登录 new-api（新版和旧版）和 sub2api，支持两步验证；显示余额
 - [x] 左上角切换当前站点：概览、密钥、工单都看当前站点；切换时可以选择 Claude Code、Codex 要不要一起改用这个站点；站点的接入、重新登录和删除在「管理站点」里
 - [x] 密钥：查看、新建（可选分组）、一键复制
-- [x] 一键配置这六个工具：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
+- [x] 一键配置（Antigravity CLI 除外：它只能用 Google 账号，或者用环境变量里的 Gemini Key）：自动选分组、建专用 Key、测试连通后再写入；写前备份、可还原、可换模型
 - [x] 托盘（macOS 是菜单栏）里快速切换：配置过的工具一起切过去（应用里的当前站点也跟着换），沿用在那个站点上选过的分组和模型；关掉窗口后留在托盘里运行
 - [x] 开启了人机验证（Turnstile 等）的站点：在应用里打开站点自己的登录页登录，登录后自动接入
 - [x] 专属链接一键接入：换上站长在 TransitHub 里设置的品牌（名称、logo、主题色、欢迎语），概览页显示公告和客服，一键配置用站长推荐的分组和模型
@@ -44,11 +44,16 @@
 - **Grok Build**：`~/.grok/config.toml` 里加一个 `[model.transitlink]`（站点地址、Key 和模型），再把 `[models]` 的默认模型、会话标题和图片说明用的模型指向它；有了自己的 Key，不再要求登录 xAI 账号。
 - **OpenCode**：`~/.config/opencode/opencode.jsonc`（没有就用 `opencode.json`）里加一个 `transitlink` 服务商，列出站点上可用的模型，再把默认模型指向它。Claude 模型走 Anthropic 接口，其他模型走 OpenAI 兼容接口。
 - **DeepSeek Harness**：网页版和桌面版的配置（`~/.dsh/profiles/web/cordis.patch.yml`、`profiles/desktop/cordis.patch.yml`，已有 `acp` 配置的也写）里加一个 `transitlink` 服务商，列出站点上可用的模型，再把默认模型指向它；Key 存在 `~/.dsh/.credentials.yaml` 里，配置里只写它的名字。DeepSeek 模型走 OpenAI 兼容接口，Claude 模型走 Anthropic 接口。和 DeepSeek Harness 用同一套写锁，它正在改这些文件时会请你稍后再试；总配置 `~/.dsh/cordis.patch.yml` 里另设了服务商或默认模型时不改，会提示你。还原时只撤掉 TransitLink 写的内容，DeepSeek Harness 后来写进配置档的设置都留着。
+- **Pi**：`~/.pi/agent/models.json` 里加一个 `transitlink` 服务商（按模型选接口：Claude 走 Anthropic，名字有 codex 的走 Responses，其他走 Chat Completions），`settings.json` 里把默认服务商和模型指向它。Pi 自己正在保存设置时会请你稍后再试。
+- **Oh My Pi**：`~/.omp/agent/models.yml` 里加一个 `transitlink` 服务商，`config.yml` 里把默认模型（`modelRoles.default`）指向它，并跳过第一次运行的设置向导（它会改默认模型）。只有旧的 `models.json` 还没迁移时不改，会提示你。
+- **Kimi Code**：`~/.kimi-code/config.toml` 里按接口加 `transitlink`、`transitlink-anthropic` 等服务商和 `transitlink/<模型>` 模型，再把 `default_model` 指向它。
+- **MiniMax Code**：`~/.minimax/config.yaml` 的 `custom_provider` 里加一个 `transitlink`，再把 `defaultModel` 指向它。MiniMax Code（或桌面版）正在保存配置时会请你稍后再试。
+- **OpenClaw**：`~/.openclaw/openclaw.json` 的 `models.providers` 里加一个 `transitlink` 服务商，把主模型指向它，并加进允许的模型列表；还没有 `gateway.mode` 时补上 `local`（后台服务要它才会启动）。由 `$include` 引入的部分不改。
 - 会盖过上面这些设置的旧值（例如别的工具写的 `ANTHROPIC_API_KEY`、`apiKeyHelper`、`openai_base_url`）会先清掉，其他设置、注释和格式都保留。
 - 写之前先用这个 Key 测试连通，测试不通过就什么都不改。每次修改前把原文件备份到 `~/.transitlink/backups/`，第一次修改前的原文件一直保留。
 - 「还原」只把 TransitLink 改过的几项改回第一次配置之前的样子，你后来加的其他设置不受影响。
-- 用 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`GEMINI_CLI_HOME`、`GROK_HOME`、`XDG_CONFIG_HOME`、`DSH_HOME` 换过配置目录的，按换过的目录处理。
-- 允许注释的配置文件（Gemini CLI 的 `settings.json`、OpenCode 的配置）也只改这几个键，注释和格式都保留；DeepSeek Harness 的配置档只重写 `llm-pi-ai` 和默认模型这两项，其他项和注释原样保留，`.credentials.yaml` 只改 TransitLink 那一行。
+- 用 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`GEMINI_CLI_HOME`、`GROK_HOME`、`XDG_CONFIG_HOME`、`DSH_HOME`、`PI_CODING_AGENT_DIR`、`OMP_PROFILE`、`KIMI_CODE_HOME`、`MINIMAX_DATA_DIR`、`OPENCLAW_CONFIG_PATH`（以及 `OPENCLAW_STATE_DIR`、`OPENCLAW_PROFILE`）换过配置目录的，按换过的目录处理。
+- 允许注释的配置文件（Gemini CLI 的 `settings.json`、OpenCode、Pi、OpenClaw 的配置，Oh My Pi、MiniMax Code 的 YAML，Kimi Code 的 TOML）也只改这几项，注释和格式都保留；DeepSeek Harness 的配置档只重写 `llm-pi-ai` 和默认模型这两项，其他项和注释原样保留，`.credentials.yaml` 只改 TransitLink 那一行。
 
 ## 站长：给用户发专属链接
 
@@ -115,7 +120,7 @@ src-tauri/               Rust 核心
   src/sites/             new-api 和 sub2api 的接口、登录密码加密
   src/store.rs           站点列表（~/.transitlink/sites.json，不含凭证）
   src/secrets.rs         凭证存取（系统钥匙串）
-  src/configure/         一键配置：Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、DeepSeek Harness 的配置读写，备份、还原，连通测试
+  src/configure/         一键配置：每个工具的配置读写（几个文件一起改的工具共用 multi.rs），备份、还原，连通测试
   src/install.rs         一键安装、升级：运行官方安装命令或 npm，输出发给界面，跟随系统代理
   src/upgrade.rs         工具升级：查 npm 上的最新版本，按工具是怎么装的选升级命令
   src/uninstall.rs       工具卸载：按工具是怎么装的选卸载办法，只卸程序
@@ -130,4 +135,4 @@ src-tauri/               Rust 核心
 
 ## 致谢
 
-决定 Claude Code、Codex 连到哪里、用什么鉴权的配置项清单，参考了 [cc-switch](https://github.com/farion1231/cc-switch)（MIT 许可）的整理；DeepSeek Harness 的配置写法、各工具的升级和卸载办法也参考了 cc-switch。
+决定 Claude Code、Codex 连到哪里、用什么鉴权的配置项清单，参考了 [cc-switch](https://github.com/farion1231/cc-switch)（MIT 许可）的整理；DeepSeek Harness、Pi、Oh My Pi、Kimi Code、MiniMax Code、OpenClaw 的配置写法，各工具的升级和卸载办法也参考了 cc-switch，并对照各工具自己的源码核实过。

@@ -113,11 +113,11 @@ export function SiteSwitcher({ unread }: { unread: Map<string, number> }) {
         aria-controls={open ? menuId : undefined}
         aria-label={t("switcher.current", { site: siteName(site), account: site.account })}
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-surface/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
       >
         <span className="relative shrink-0">
           {brand.site ? <BrandMark brand={brand} /> : <SiteIcon site={site} className="h-8 w-8" />}
-          {otherUnread && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-card bg-danger" aria-hidden />}
+          {otherUnread && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-background bg-danger" aria-hidden />}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold">{siteName(site)}</span>
@@ -135,7 +135,7 @@ export function SiteSwitcher({ unread }: { unread: Map<string, number> }) {
           id={menuId}
           role="menu"
           aria-label={t("switcher.menu")}
-          className="absolute left-3 top-full z-40 -mt-1 w-72 rounded-xl border border-border bg-card p-1.5 shadow-xl"
+          className="absolute left-3 top-full z-40 -mt-1 w-72 rounded-xl border border-border bg-card p-1.5 shadow-[0_12px_32px_-8px_rgba(16,24,40,0.25)]"
         >
           <p className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">{t("switcher.menu")}</p>
           {sites.map((item) => {

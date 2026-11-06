@@ -31,7 +31,12 @@ export function Dialog({
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className={`max-h-[90vh] w-full overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-xl ${wide ? "max-w-xl" : "max-w-md"}`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className={`max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-border/80 bg-card p-5 shadow-[0_24px_64px_-16px_rgba(16,24,40,0.35)] ${wide ? "max-w-xl" : "max-w-md"}`}
+      >
         <div className="flex items-center justify-between gap-3">
           <h2 id={titleId} className="text-base font-semibold">
             {title}

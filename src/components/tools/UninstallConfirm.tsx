@@ -53,7 +53,7 @@ export function UninstallConfirm({
           {runnable ? t("common.cancel") : t("common.close")}
         </Button>
         {runnable && (
-          <Button size="sm" className="bg-danger" onClick={() => onConfirm(data)}>
+          <Button size="sm" variant="danger" onClick={() => onConfirm(data)}>
             <Trash2 className="h-4 w-4" aria-hidden />
             {t("tools.uninstall.confirm")}
           </Button>

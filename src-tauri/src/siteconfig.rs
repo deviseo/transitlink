@@ -63,6 +63,11 @@ pub struct ConfigRecommend {
     pub deepseek_harness: ToolRecommend,
 }
 
+static NO_RECOMMEND: ToolRecommend = ToolRecommend {
+    group: String::new(),
+    model: String::new(),
+};
+
 impl ConfigRecommend {
     /// 某个工具的推荐设置。
     pub fn tool(&self, kind: crate::tools::ToolKind) -> &ToolRecommend {
@@ -74,6 +79,13 @@ impl ConfigRecommend {
             ToolKind::GrokBuild => &self.grok_build,
             ToolKind::OpenCode => &self.opencode,
             ToolKind::DeepseekHarness => &self.deepseek_harness,
+            // TransitHub 还没有这几个工具的推荐设置：按分组名称认。
+            ToolKind::Pi
+            | ToolKind::OhMyPi
+            | ToolKind::KimiCode
+            | ToolKind::MinimaxCode
+            | ToolKind::OpenClaw
+            | ToolKind::Antigravity => &NO_RECOMMEND,
         }
     }
 }

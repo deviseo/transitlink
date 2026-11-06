@@ -29,24 +29,30 @@ function Overview({ site }: { site: SiteView }) {
   const money = new Intl.NumberFormat(i18n.language, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-wrap items-center gap-4">
-        {brand.site ? <BrandMark brand={brand} className="h-12 w-12" /> : <SiteAvatar name={site.name} logoUrl={site.logoUrl} className="h-12 w-12" />}
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-2xl font-semibold">{siteName(site)}</h1>
-          <p className="truncate text-sm text-muted-foreground">
-            {site.account} · {siteHost(site)}
-          </p>
+    <div className="space-y-5">
+      <section className="relative overflow-hidden rounded-2xl border border-border/80 bg-card px-6 py-5">
+        {/* 一点品牌色的光晕，让站点卡片和下面的内容区分开。 */}
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_120%_at_0%_0%,color-mix(in_srgb,var(--brand)_11%,transparent),transparent_70%)]"
+          aria-hidden
+        />
+        <div className="relative flex flex-wrap items-center gap-4">
+          {brand.site ? <BrandMark brand={brand} className="h-12 w-12" /> : <SiteAvatar name={site.name} logoUrl={site.logoUrl} className="h-12 w-12" />}
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-[22px] font-semibold tracking-tight">{siteName(site)}</h1>
+            <p className="truncate text-[13px] text-muted-foreground">
+              {site.account} · {siteHost(site)}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">{t("overview.balance")}</p>
+            {account.isLoading && <LoaderCircle className="ml-auto mt-1 h-5 w-5 animate-spin text-muted-foreground" aria-hidden />}
+            {account.data && <p className="text-[26px] font-semibold leading-tight tabular-nums">{money.format(account.data.balanceUsd)}</p>}
+            {account.isError && !expired && <p className="max-w-56 text-xs text-danger">{errorText(t, account.error)}</p>}
+          </div>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground">{t("overview.balance")}</p>
-          {account.isLoading && <LoaderCircle className="ml-auto mt-1 h-5 w-5 animate-spin text-muted-foreground" aria-hidden />}
-          {account.data && <p className="text-2xl font-semibold tabular-nums">{money.format(account.data.balanceUsd)}</p>}
-          {account.isError && !expired && <p className="max-w-56 text-xs text-danger">{errorText(t, account.error)}</p>}
-        </div>
-      </header>
-
-      {brand.welcome && <p className="text-sm text-muted-foreground">{brand.welcome}</p>}
+        {brand.welcome && <p className="relative mt-4 border-t border-border/70 pt-3 text-[13px] text-muted-foreground">{brand.welcome}</p>}
+      </section>
       <ReloginNotice site={site} />
       <ToolsSummary site={site} />
       <SiteNotice brand={brand} />

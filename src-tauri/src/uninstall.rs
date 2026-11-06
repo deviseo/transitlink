@@ -29,6 +29,9 @@ pub enum Plan {
         display: String,
         npm: bool,
         env: Vec<(String, String)>,
+        /// 先运行的命令（程序和参数），成功了才运行上面的（OpenClaw 要先停掉它的后台服务）。
+        #[serde(default)]
+        before: Option<Vec<String>>,
     },
     /// 删除这些文件（官方安装脚本装的；先删命令，再删程序）。`program`：命令指向的程序，删之前核对。
     Files { program: String, files: Vec<String> },
@@ -114,6 +117,42 @@ pub fn plan(
     if let Some(plan) = homebrew_plan(kind, &real) {
         return plan;
     }
+    // OpenClaw 先停掉并删掉它的后台服务（npm 卸载不会管，留下的服务会一直失败）。
+    if kind == ToolKind::OpenClaw {
+        const STOP: [&str; 4] = ["uninstall", "--service", "--yes", "--non-interactive"];
+        let stop = format!("openclaw {} && ", STOP.join(" "));
+        return match upgrade::manager(binary, &real, upgrade::npm_packages(kind)) {
+            Some(Manager::Npm) => match npm_plan(kind, binary, &real, search, home) {
+                Ok(Plan::Command {
+                    program,
+                    args,
+                    display,
+                    npm,
+                    env,
+                    ..
+                }) => Plan::Command {
+                    program,
+                    args,
+                    display: format!("{stop}{display}"),
+                    npm,
+                    env,
+                    before: Some(
+                        std::iter::once(binary.display().to_string())
+                            .chain(STOP.iter().map(|arg| arg.to_string()))
+                            .collect(),
+                    ),
+                },
+                Ok(other) => other,
+                Err(NpmIssue::NoNpm(package)) => {
+                    manual(Some(format!("{stop}npm uninstall -g {package}")))
+                }
+                Err(NpmIssue::Unverified) => manual(None),
+            },
+            Some(Manager::Pnpm) => manual(Some(format!("{stop}pnpm remove -g {package}"))),
+            Some(Manager::Bun) => manual(Some(format!("{stop}bun remove -g {package}"))),
+            _ => manual(None),
+        };
+    }
     match upgrade::manager(binary, &real, upgrade::npm_packages(kind)) {
         Some(Manager::Npm) => {
             return match npm_plan(kind, binary, &real, search, home) {
@@ -163,7 +202,15 @@ fn homebrew_plan(kind: ToolKind, real: &Path) -> Option<Plan> {
             ToolKind::Codex => &[("/Caskroom/", "codex")],
             ToolKind::GeminiCli => &[("/Cellar/", "gemini-cli")],
             ToolKind::OpenCode => &[("/Cellar/", "opencode")],
-            ToolKind::GrokBuild | ToolKind::DeepseekHarness => &[],
+            ToolKind::Pi => &[("/Cellar/", "pi-coding-agent")],
+            ToolKind::OhMyPi => &[("/Cellar/", "omp")],
+            ToolKind::KimiCode => &[("/Cellar/", "kimi-code")],
+            // `--zap` 会删掉用户数据，我们只用普通的卸载。
+            ToolKind::Antigravity => &[("/Caskroom/", "antigravity-cli")],
+            ToolKind::GrokBuild
+            | ToolKind::DeepseekHarness
+            | ToolKind::MinimaxCode
+            | ToolKind::OpenClaw => &[],
         };
         let brew = PathBuf::from(prefix).join("bin").join("brew");
         if !owners.contains(&(marker, token)) || !brew.is_file() {
@@ -176,6 +223,7 @@ fn homebrew_plan(kind: ToolKind, real: &Path) -> Option<Plan> {
             display: format!("{key}={value} brew uninstall {flag} {token}"),
             npm: false,
             env: vec![(key.to_string(), value.to_string())],
+            before: None,
         });
     }
     None
@@ -247,6 +295,7 @@ fn npm_plan(
         ),
         npm: true,
         env: Vec::new(),
+        before: None,
     })
 }
 
@@ -326,7 +375,20 @@ fn native_files(kind: ToolKind, binary: &Path, real: &Path) -> Option<Vec<PathBu
             lower.ends_with("/.opencode/bin/opencode")
                 || lower.ends_with("/.opencode/bin/opencode.exe")
         }
-        ToolKind::GeminiCli | ToolKind::DeepseekHarness => false,
+        // 官方安装脚本只放这一个程序（Oh My Pi 指定装编好的程序时）。
+        ToolKind::OhMyPi => lower.ends_with("/.local/bin/omp") || lower.ends_with("/omp/omp.exe"),
+        ToolKind::KimiCode => {
+            lower.ends_with("/.kimi-code/bin/kimi") || lower.ends_with("/.kimi-code/bin/kimi.exe")
+        }
+        ToolKind::Antigravity => {
+            lower.ends_with("/.local/bin/agy") || lower.ends_with("/agy/bin/agy.exe")
+        }
+        // 官方安装脚本装的是一整个目录（几个版本的 npm 依赖），只能由用户自己删。
+        ToolKind::GeminiCli
+        | ToolKind::DeepseekHarness
+        | ToolKind::Pi
+        | ToolKind::MinimaxCode
+        | ToolKind::OpenClaw => false,
     };
     if !known {
         return None;
@@ -630,6 +692,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn openclaw_stops_its_background_service_first() {
+        let dir = temp_dir("openclaw");
+        let prefix = npm_prefix(&dir, "openclaw", "openclaw");
+        let binary = prefix.join("bin/openclaw");
+        let Plan::Command {
+            before,
+            display,
+            args,
+            ..
+        } = plan(ToolKind::OpenClaw, &binary, None, &OsString::new(), &dir)
+        else {
+            panic!("expected a command");
+        };
+        assert_eq!(
+            before,
+            Some(vec![
+                binary.display().to_string(),
+                "uninstall".into(),
+                "--service".into(),
+                "--yes".into(),
+                "--non-interactive".into()
+            ])
+        );
+        assert!(display.starts_with(
+            "openclaw uninstall --service --yes --non-interactive && npm uninstall -g"
+        ));
+        assert_eq!(args.last().map(String::as_str), Some("openclaw"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn opencode_two_is_found_on_disk_without_the_version() {
         let dir = temp_dir("opencode2");
         let prefix = npm_prefix(&dir, "@opencode/cli", "opencode");
@@ -806,6 +900,7 @@ mod tests {
                 display: "HOMEBREW_NO_AUTOREMOVE=1 brew uninstall --formula gemini-cli".into(),
                 npm: false,
                 env: vec![("HOMEBREW_NO_AUTOREMOVE".into(), "1".into())],
+                before: None,
             }
         );
         let node = dir.join("homebrew/Cellar/node/24.0.0/lib/node_modules/@openai/codex/bin/codex");

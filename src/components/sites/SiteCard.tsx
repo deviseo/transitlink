@@ -44,7 +44,14 @@ export function SiteCard({
           <p className="truncate text-xs text-muted-foreground">
             {site.baseUrl} · {site.account}
           </p>
-          {site.config && <p className="truncate text-xs text-brand">{t("sites.card.linked")}</p>}
+          {site.config ? (
+            <p className="truncate text-xs text-brand">{t("sites.card.linked")}</p>
+          ) : (
+            <p className="flex items-center gap-1 truncate text-xs text-muted-foreground" title={t("sites.notLinked")}>
+              <Info className="h-3 w-3 shrink-0" aria-hidden />
+              {t("sites.card.notLinkedShort")}
+            </p>
+          )}
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">{t("sites.card.balance")}</p>
@@ -53,13 +60,6 @@ export function SiteCard({
           {account.isError && !expired && <p className="max-w-56 text-xs text-danger">{errorText(t, account.error)}</p>}
         </div>
       </div>
-
-      {!site.config && (
-        <p className="mt-3 flex gap-2 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
-          <Info className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-          {t("sites.notLinked")}
-        </p>
-      )}
 
       {expired && (
         <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-danger/10 p-3 text-sm text-danger">
@@ -70,30 +70,30 @@ export function SiteCard({
         </div>
       )}
 
-      <div className="mt-3 flex items-center justify-between gap-2">
-        {current ? (
-          <span />
-        ) : (
-          <Button variant="secondary" size="sm" onClick={() => onSwitch(site)}>
-            <ArrowRightLeft className="h-4 w-4" aria-hidden />
-            {t("sites.switchTo")}
-          </Button>
-        )}
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-border/70 pt-3">
         {confirming ? (
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">{t("sites.card.removeConfirm")}</span>
             <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
               {t("common.cancel")}
             </Button>
-            <Button size="sm" className="bg-danger" onClick={() => onRemove(site)}>
+            <Button size="sm" variant="danger" onClick={() => onRemove(site)}>
               {t("sites.card.remove")}
             </Button>
           </div>
         ) : (
-          <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
-            <Trash2 className="h-4 w-4" aria-hidden />
-            {t("sites.card.remove")}
-          </Button>
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+              <Trash2 className="h-4 w-4" aria-hidden />
+              {t("sites.card.remove")}
+            </Button>
+            {!current && (
+              <Button variant="secondary" size="sm" onClick={() => onSwitch(site)}>
+                <ArrowRightLeft className="h-4 w-4" aria-hidden />
+                {t("sites.switchTo")}
+              </Button>
+            )}
+          </>
         )}
       </div>
     </Card>

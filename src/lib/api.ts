@@ -1,6 +1,18 @@
 import { call, inDesktop } from "./tauri";
 
-export type ToolKind = "claudeCode" | "codex" | "geminiCli" | "grokBuild" | "opencode" | "deepseekHarness";
+export type ToolKind =
+  | "claudeCode"
+  | "codex"
+  | "geminiCli"
+  | "grokBuild"
+  | "opencode"
+  | "deepseekHarness"
+  | "pi"
+  | "ohMyPi"
+  | "kimiCode"
+  | "minimaxCode"
+  | "openclaw"
+  | "antigravity";
 
 export interface ToolStatus {
   kind: ToolKind;
@@ -13,6 +25,8 @@ export interface ToolStatus {
   installCommand: string;
   /** 用 npm 安装（需要 Node.js，可以换国内镜像）。 */
   installNpm: boolean;
+  /** 能一键连接站点（Antigravity CLI 不能：只能用 Google 账号或 Gemini 官方格式的接口）。 */
+  configurable: boolean;
 }
 
 /** 工具配置的状态：没配置、用 TransitLink 配好了、配好后被别的程序改了、用户自己配了别的服务、配置文件格式有误。 */
@@ -204,12 +218,18 @@ export const getAppInfo = () =>
 const notConfigured = { state: "notConfigured", applied: null, currentBaseUrl: null, currentModel: null, currentProvider: null } as const;
 const missing = { installed: false, binaryPath: null, version: null, configExists: false } as const;
 const previewTools: ToolOverview[] = [
-  { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.1.300", configPath: "~/.claude/settings.json", configExists: true, installCommand: "curl -fsSL https://claude.ai/install.sh | bash", installNpm: false, ...notConfigured },
-  { kind: "codex", ...missing, configPath: "~/.codex/config.toml", installCommand: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", installNpm: false, ...notConfigured },
-  { kind: "geminiCli", ...missing, configPath: "~/.gemini/.env", installCommand: "npm install -g @google/gemini-cli", installNpm: true, ...notConfigured },
-  { kind: "grokBuild", ...missing, configPath: "~/.grok/config.toml", installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash", installNpm: false, ...notConfigured },
-  { kind: "opencode", ...missing, configPath: "~/.config/opencode/opencode.json", installCommand: "curl -fsSL https://opencode.ai/install | bash", installNpm: false, ...notConfigured },
-  { kind: "deepseekHarness", ...missing, configPath: "~/.dsh/profiles/web/cordis.patch.yml", installCommand: "npm install -g @deepseek-ai/dsh --engine-strict", installNpm: true, ...notConfigured },
+  { kind: "claudeCode", installed: true, binaryPath: "/usr/local/bin/claude", version: "2.1.300", configPath: "~/.claude/settings.json", configExists: true, installCommand: "curl -fsSL https://claude.ai/install.sh | bash", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "codex", ...missing, configPath: "~/.codex/config.toml", installCommand: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "geminiCli", ...missing, configPath: "~/.gemini/.env", installCommand: "npm install -g @google/gemini-cli", installNpm: true, configurable: true, ...notConfigured },
+  { kind: "grokBuild", ...missing, configPath: "~/.grok/config.toml", installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "opencode", ...missing, configPath: "~/.config/opencode/opencode.json", installCommand: "curl -fsSL https://opencode.ai/install | bash", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "deepseekHarness", ...missing, configPath: "~/.dsh/profiles/web/cordis.patch.yml", installCommand: "npm install -g @deepseek-ai/dsh --engine-strict", installNpm: true, configurable: true, ...notConfigured },
+  { kind: "pi", ...missing, configPath: "~/.pi/agent/models.json", installCommand: "npm install -g @earendil-works/pi-coding-agent --ignore-scripts", installNpm: true, configurable: true, ...notConfigured },
+  { kind: "ohMyPi", ...missing, configPath: "~/.omp/agent/models.yml", installCommand: "curl -fsSL https://omp.sh/install | sh -s -- --binary", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "kimiCode", ...missing, configPath: "~/.kimi-code/config.toml", installCommand: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "minimaxCode", ...missing, configPath: "~/.minimax/config.yaml", installCommand: "curl -fsSL https://filecdn.minimax.chat/public/install.sh | bash", installNpm: false, configurable: true, ...notConfigured },
+  { kind: "openclaw", ...missing, configPath: "~/.openclaw/openclaw.json", installCommand: "npm install -g openclaw --ignore-scripts=false --allow-scripts=openclaw", installNpm: true, configurable: true, ...notConfigured },
+  { kind: "antigravity", ...missing, configPath: "~/.gemini/antigravity-cli/settings.json", installCommand: "curl -fsSL https://antigravity.google/cli/install.sh | bash", installNpm: false, configurable: false, ...notConfigured },
 ];
 const previewModels: Record<ToolKind, string[]> = {
   claudeCode: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"],
@@ -218,8 +238,27 @@ const previewModels: Record<ToolKind, string[]> = {
   grokBuild: ["grok-4.7", "grok-code-fast-1"],
   opencode: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
   deepseekHarness: ["deepseek-v4", "deepseek-v4-flash"],
+  pi: ["claude-sonnet-5-5", "claude-opus-5-5"],
+  ohMyPi: ["claude-sonnet-5-5", "claude-opus-5-5"],
+  kimiCode: ["kimi-k2.6", "kimi-k2.6-turbo"],
+  minimaxCode: ["MiniMax-M3", "MiniMax-M3-Lite"],
+  openclaw: ["claude-sonnet-5-5", "gpt-6.1-sol"],
+  antigravity: ["gemini-3.1-pro-preview"],
 };
-const previewToolNames: Record<ToolKind, string> = { claudeCode: "Claude Code", codex: "Codex", geminiCli: "Gemini CLI", grokBuild: "Grok Build", opencode: "OpenCode", deepseekHarness: "DeepSeek Harness" };
+const previewToolNames: Record<ToolKind, string> = {
+  claudeCode: "Claude Code",
+  codex: "Codex",
+  geminiCli: "Gemini CLI",
+  grokBuild: "Grok Build",
+  opencode: "OpenCode",
+  deepseekHarness: "DeepSeek Harness",
+  pi: "Pi",
+  ohMyPi: "Oh My Pi",
+  kimiCode: "Kimi Code",
+  minimaxCode: "MiniMax Code",
+  openclaw: "OpenClaw",
+  antigravity: "Antigravity CLI",
+};
 const previewTool = (kind: ToolKind) => previewTools.find((tool) => tool.kind === kind) as ToolOverview;
 const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -248,7 +287,16 @@ export type InstallOutcome =
 
 /** 卸载办法：运行包管理器的命令、删除官方安装脚本装的几个文件，或者请用户自己卸载。 */
 export type UninstallPlan =
-  | { kind: "command"; program: string; args: string[]; display: string; npm: boolean; env: [string, string][] }
+  /** before：卸载前先运行的命令（例如 OpenClaw 先停掉后台服务）。 */
+  | {
+      kind: "command";
+      program: string;
+      args: string[];
+      display: string;
+      npm: boolean;
+      env: [string, string][];
+      before?: string[] | null;
+    }
   | { kind: "files"; program: string; files: string[] }
   /** command：请用户在终端里运行的命令；为空时请用原来的办法卸载（desktop：随桌面版装的）。 */
   | { kind: "manual"; command: string | null; desktop: boolean };
@@ -280,6 +328,12 @@ const previewPackages: Record<ToolKind, string> = {
   grokBuild: "@xai-official/grok",
   opencode: "opencode-ai",
   deepseekHarness: "@deepseek-ai/dsh",
+  pi: "@earendil-works/pi-coding-agent",
+  ohMyPi: "@oh-my-pi/pi-coding-agent",
+  kimiCode: "@moonshot-ai/kimi-code",
+  minimaxCode: "@minimax-ai/code",
+  openclaw: "openclaw",
+  antigravity: "antigravity-cli",
 };
 
 /** 卸载前的预览（工具没装时为空）。预览时当作 npm 装的。 */
@@ -428,6 +482,11 @@ export const setupPlan = (siteId: string) =>
       { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
       { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },
       { kind: "deepseekHarness", recommendedGroup: "default", matched: false, recommendedModel: null },
+      { kind: "pi", recommendedGroup: "claude", matched: true, recommendedModel: null },
+      { kind: "ohMyPi", recommendedGroup: "claude", matched: true, recommendedModel: null },
+      { kind: "kimiCode", recommendedGroup: "default", matched: false, recommendedModel: null },
+      { kind: "minimaxCode", recommendedGroup: "default", matched: false, recommendedModel: null },
+      { kind: "openclaw", recommendedGroup: "claude", matched: true, recommendedModel: null },
     ],
   }), { siteId });
 

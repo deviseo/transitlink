@@ -2,12 +2,14 @@
 
 /* 颜色都用变量：站长定制品牌时只需替换 --brand（由站点配置在运行时写入）。 */
 :root {
-  --background: #f7f8fa;
-  --foreground: #161a20;
+  /* 窗口底色（侧边栏所在的区域）；主内容放在 --surface 的面板上。 */
+  --background: #eef0f3;
+  --surface: #ffffff;
+  --foreground: #14171c;
   --card: #ffffff;
-  --muted: #eef0f3;
-  --muted-foreground: #5f6b7a;
-  --border: #e1e4e9;
+  --muted: #f2f4f7;
+  --muted-foreground: #667085;
+  --border: #e4e7ec;
   --brand: #2563eb;
   --brand-foreground: #ffffff;
   --success: #15803d;
@@ -18,11 +20,12 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0f1115;
+    --background: #0b0d11;
+    --surface: #13161b;
     --foreground: #e8eaee;
-    --card: #171a20;
-    --muted: #20242c;
-    --muted-foreground: #9aa3af;
+    --card: #181b21;
+    --muted: #1f232a;
+    --muted-foreground: #98a2b3;
     --border: #2a2f38;
     --brand: #3b82f6;
     --success: #4ade80;
@@ -34,6 +37,7 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-muted: var(--muted);
@@ -57,5 +61,10 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--brand) 22%, transparent);
 }

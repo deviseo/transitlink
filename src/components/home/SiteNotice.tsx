@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, Copy, ExternalLink, Headset, LifeBuoy, Megaphone } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
-import { Card } from "../ui/card";
+import { SectionCard } from "../ui/card";
 import { inDesktop } from "../../lib/tauri";
 import type { ActiveBrand } from "../../lib/useActiveBrand";
 import type { SiteConfig } from "../../lib/api";
@@ -25,39 +25,33 @@ export function SiteNotice({ brand }: { brand: ActiveBrand }) {
   const config = brand.site?.config;
   const tickets = config?.tickets?.enabled ?? false;
   if (!brand.site || !config || (!config.notice.content && config.support.length === 0 && !tickets)) return null;
+  const notice = config.notice.content;
+  const support = config.support.length > 0 || tickets;
   return (
-    <Card className="space-y-4">
-      {config.notice.content && (
-        <div className="flex gap-3">
-          <Megaphone className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
-          <div className="min-w-0">
-            <h2 className="font-medium">{t("home.notice")}</h2>
-            <p className="mt-1 whitespace-pre-line text-sm text-muted-foreground">{config.notice.content}</p>
-          </div>
-        </div>
+    <div className={`grid gap-4 ${notice && support ? "md:grid-cols-2" : ""}`}>
+      {notice && (
+        <SectionCard title={t("home.notice")} icon={<Megaphone className="h-4 w-4 text-brand" aria-hidden />}>
+          <p className="whitespace-pre-line text-[13px] leading-relaxed text-muted-foreground">{notice}</p>
+        </SectionCard>
       )}
-      {(config.support.length > 0 || tickets) && (
-        <div className="flex gap-3">
-          <Headset className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
-          <div className="min-w-0 flex-1">
-            <h2 className="font-medium">{t("home.support")}</h2>
-            <ul className="mt-2 flex flex-wrap gap-2">
-              {tickets && (
-                <li>
-                  <Link to="/tickets" className={buttonVariants({ size: "sm" })}>
-                    <LifeBuoy className="h-4 w-4" aria-hidden />
-                    {t("home.openTicket")}
-                  </Link>
-                </li>
-              )}
-              {config.support.map((item) => (
-                <SupportItem key={`${item.type}-${item.value}`} item={item} />
-              ))}
-            </ul>
-          </div>
-        </div>
+      {support && (
+        <SectionCard title={t("home.support")} icon={<Headset className="h-4 w-4 text-brand" aria-hidden />}>
+          <ul className="flex flex-wrap gap-2">
+            {tickets && (
+              <li>
+                <Link to="/tickets" className={buttonVariants({ size: "sm" })}>
+                  <LifeBuoy className="h-4 w-4" aria-hidden />
+                  {t("home.openTicket")}
+                </Link>
+              </li>
+            )}
+            {config.support.map((item) => (
+              <SupportItem key={`${item.type}-${item.value}`} item={item} />
+            ))}
+          </ul>
+        </SectionCard>
       )}
-    </Card>
+    </div>
   );
 }
 

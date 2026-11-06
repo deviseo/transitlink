@@ -8,7 +8,8 @@ import { Dialog } from "../ui/dialog";
 import { applyTool, detectTools, listSites, setupPlan, type ApplyOutcome, type GroupSummary, type ToolKind } from "../../lib/api";
 import { errorText } from "../../lib/errors";
 import { siteName } from "../../lib/currentSite";
-import { ALL_TOOLS, familyKey, testText, toolCommands } from "../../lib/tools";
+import { ALL_TOOLS, CONFIGURABLE_TOOLS, familyKey, testText, toolCommands } from "../../lib/tools";
+import { ToolIcon } from "./ToolIcon";
 
 type Run = { status: "running" } | { status: "done"; outcome: ApplyOutcome } | { status: "failed"; error: unknown };
 type Phase = "choose" | "running" | "done";
@@ -34,7 +35,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
   const [groups, setGroups] = useState<Partial<Record<ToolKind, string>>>({});
   const [runs, setRuns] = useState<Partial<Record<ToolKind, Run>>>({});
   const [phase, setPhase] = useState<Phase>("choose");
-  const visible = only ? [only] : ALL_TOOLS;
+  const visible = only ? [only] : CONFIGURABLE_TOOLS;
 
   // 每次打开都从选择开始。
   useEffect(() => {
@@ -132,13 +133,13 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                 ) : (
                   <p className="text-xs text-muted-foreground">{t("setup.balance", { amount: money.format(plan.data.balanceUsd) })}</p>
                 ))}
-              <ul className="space-y-2">
+              <ul className={`divide-y divide-border/70 rounded-xl border border-border/80 ${only ? "" : "max-h-[46vh] overflow-y-auto"}`}>
                 {visible.map((kind) => {
                   const toolPlan = plan.data.tools.find((tool) => tool.kind === kind);
                   const installed = tools.data?.find((tool) => tool.kind === kind)?.installed ?? true;
                   const id = `setup-${kind}`;
                   return (
-                    <li key={kind} className="rounded-lg border border-border p-3">
+                    <li key={kind} className="px-3 py-2.5">
                       <div className="flex items-center gap-3">
                         {!only && (
                           <input
@@ -149,8 +150,9 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                             className="h-4 w-4 shrink-0 accent-brand"
                           />
                         )}
-                        <label htmlFor={only ? `${id}-group` : id} className="min-w-0 flex-1 font-medium">
-                          {t(`tools.${kind}`)}
+                        <label htmlFor={only ? `${id}-group` : id} className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px] font-medium">
+                          <ToolIcon kind={kind} size="sm" />
+                          <span className="truncate">{t(`tools.${kind}`)}</span>
                         </label>
                         <label htmlFor={`${id}-group`} className="sr-only">
                           {t("setup.group")}
@@ -160,7 +162,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                           value={groupFor(kind)}
                           onChange={(event) => setGroups((current) => ({ ...current, [kind]: event.target.value }))}
                           disabled={!chosen[kind]}
-                          className={`${selectClass} w-64`}
+                          className={`${selectClass} w-60`}
                         >
                           {plan.data.groups.length === 0 && <option value="">{t("setup.defaultGroup")}</option>}
                           {plan.data.groups.map((group) => (
