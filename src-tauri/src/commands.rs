@@ -7,8 +7,11 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use crate::accounts::{Accounts, LoginOutcome, SiteView};
 use crate::configure::probe::TestResult;
 use crate::configure::{ApplyOutcome, ConfigError, Configurator, SetupPlan, ToolOverview};
+use crate::health::alerts::{self, Alert, AlertCenter};
+use crate::health::checkup::{self, Checkup};
 use crate::install::{InstallOutcome, Installer};
-use crate::settings::{AppSettings, SettingsStore};
+use crate::migrate::{self, ImportOutcome, MigrateError, PendingStore, PendingView};
+use crate::settings::{AlertSettings, AppSettings, SettingsStore};
 use crate::siteconfig::{self, SiteConfig};
 use crate::sites::http::Http;
 use crate::sites::{AccountSummary, GroupSummary, KeySummary, SiteError, SiteInfo};
@@ -64,6 +67,26 @@ impl From<ConfigError> for CommandError {
         CommandError {
             code: code.to_string(),
             message,
+        }
+    }
+}
+
+impl From<MigrateError> for CommandError {
+    fn from(error: MigrateError) -> Self {
+        match error {
+            MigrateError::Site(error) => error.into(),
+            MigrateError::Save(message) => CommandError {
+                code: "backupWrite".to_string(),
+                message: Some(message),
+            },
+            MigrateError::Io(message) => CommandError {
+                code: "configWrite".to_string(),
+                message: Some(message),
+            },
+            other => CommandError {
+                code: other.code().to_string(),
+                message: None,
+            },
         }
     }
 }
@@ -259,6 +282,139 @@ pub fn set_language(
         .map_err(settings_error)?;
     refresh_tray(&app);
     Ok(())
+}
+
+/// 一键体检：终端代理、站点和每个用 TransitLink 配置过的工具。只读，不改任何东西。
+#[tauri::command]
+pub async fn run_checkup(
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    settings: State<'_, SettingsStore>,
+) -> CommandResult<Checkup> {
+    let names = checkup::shell_names();
+    let (statuses, shell) = tokio::join!(
+        tauri::async_runtime::spawn_blocking(tools::detect_all),
+        tauri::async_runtime::spawn_blocking(move || tools::shell_env(&names)),
+    );
+    Ok(checkup::run(
+        &accounts,
+        &configurator,
+        statuses.unwrap_or_default(),
+        shell.ok().flatten(),
+        &settings.get(),
+    )
+    .await)
+}
+
+/// 现在的余额、Key 提醒。
+#[tauri::command]
+pub fn alerts(center: State<'_, AlertCenter>) -> Vec<Alert> {
+    center.list()
+}
+
+/// 马上查一次提醒（修好问题、充完值以后）。
+#[tauri::command]
+pub async fn refresh_alerts(app: AppHandle) -> Vec<Alert> {
+    alerts::refresh(&app).await
+}
+
+/// 改提醒设置，改完按新设置马上查一次（不等查完）。
+#[tauri::command]
+pub fn set_alert_settings(
+    app: AppHandle,
+    settings: State<'_, SettingsStore>,
+    alerts: AlertSettings,
+) -> CommandResult<AppSettings> {
+    let next = settings
+        .update(|settings| settings.alerts = alerts.cleaned())
+        .map_err(settings_error)?;
+    tauri::async_runtime::spawn(async move {
+        alerts::refresh(&app).await;
+    });
+    Ok(next)
+}
+
+/// 导出站点、设置和工具的选择到「下载」文件夹（不含登录凭证和 Key），并在文件管理器里显示出来。
+/// 备份相关的命令都是 async：不在主线程上读写文件（macOS 第一次写「下载」时还会弹授权）。
+#[tauri::command]
+pub async fn export_backup(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    settings: State<'_, SettingsStore>,
+) -> CommandResult<String> {
+    let version = app.package_info().version.to_string();
+    let text = migrate::export(&accounts, &configurator, &settings.get(), &version)?;
+    let dir = dirs::download_dir().unwrap_or_else(paths::home_dir);
+    let path = migrate::save(&text, &dir, crate::clock::now_secs())?;
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().reveal_item_in_dir(&path);
+    }
+    Ok(path.display().to_string())
+}
+
+/// 导入前先看看备份里有什么。
+#[tauri::command]
+pub async fn preview_backup(
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    text: String,
+) -> CommandResult<migrate::Preview> {
+    let backup = migrate::parse(&text)?;
+    Ok(migrate::preview(&accounts, &configurator, &backup))
+}
+
+/// 导入备份：站点（没有凭证，要重新登录）、设置、在每个站点上的选择，记下要恢复的工具。
+#[tauri::command]
+pub async fn import_backup(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    settings: State<'_, SettingsStore>,
+    pending: State<'_, PendingStore>,
+    text: String,
+) -> CommandResult<ImportOutcome> {
+    let backup = migrate::parse(&text)?;
+    let outcome = migrate::import(&accounts, &configurator, &settings, &pending, backup)?;
+    refresh_tray(&app);
+    Ok(outcome)
+}
+
+/// 从备份导入、还没恢复的工具。
+#[tauri::command]
+pub async fn pending_restore(
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    pending: State<'_, PendingStore>,
+) -> CommandResult<Vec<PendingView>> {
+    Ok(migrate::pending_views(&accounts, &configurator, &pending))
+}
+
+/// 一键恢复这个站点上的工具：用原来的分组和模型配置（Key 用站点上原来那个，没有就新建）。
+#[tauri::command]
+pub async fn restore_pending(
+    app: AppHandle,
+    accounts: State<'_, Accounts>,
+    configurator: State<'_, Configurator>,
+    pending: State<'_, PendingStore>,
+    site_id: String,
+) -> CommandResult<SwitchReport> {
+    accounts.site(&site_id)?;
+    // 先去掉这台电脑上已经配置过的工具（导入以后用户自己配置了的不动）。
+    migrate::pending_views(&accounts, &configurator, &pending);
+    let kinds = pending.kinds_for(&site_id);
+    let report = switch_tools_to(&configurator, &accounts, &site_id, &kinds).await;
+    pending.remove(&report.switched)?;
+    refresh_tray(&app);
+    Ok(report)
+}
+
+/// 不恢复了。
+#[tauri::command]
+pub async fn dismiss_pending(pending: State<'_, PendingStore>) -> CommandResult<()> {
+    Ok(pending.clear()?)
 }
 
 /// 应用名称、版本、数据目录和操作系统。

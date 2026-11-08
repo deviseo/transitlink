@@ -135,6 +135,31 @@ impl ToolState {
         self.write(&state)
     }
 
+    /// 一次记下多个选择（导入备份用）：已经有的不覆盖，只写一次文件。返回记下了几个。
+    pub fn remember_missing(
+        &self,
+        choices: &[(String, ToolKind, Choice)],
+    ) -> std::io::Result<usize> {
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut state = self.read();
+        let mut added = 0;
+        for (site_id, kind, choice) in choices {
+            let tools = state.choices.entry(site_id.clone()).or_default();
+            if !tools.contains_key(kind.id()) {
+                tools.insert(kind.id().to_string(), choice.clone());
+                added += 1;
+            }
+        }
+        if added > 0 {
+            state.version = 1;
+            self.write(&state)?;
+        }
+        Ok(added)
+    }
+
     pub fn remove(&self, kind: ToolKind) -> std::io::Result<()> {
         let _guard = self
             .lock

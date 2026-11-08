@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, LoaderCircle, RefreshCw, Sparkles } from "lucide-react";
+import { ChevronRight, LoaderCircle, RefreshCw, Sparkles, Stethoscope } from "lucide-react";
+import { CheckupDialog } from "../components/health/CheckupDialog";
 import { PageHeader } from "../components/layout/PageHeader";
 import { SetupDialog } from "../components/tools/SetupDialog";
 import { ToolIcon } from "../components/tools/ToolIcon";
@@ -24,6 +25,7 @@ export function ToolsPage() {
   const { site: current, sites } = useCurrentSite();
   const [filter, setFilter] = useState<Filter>("all");
   const [setupAll, setSetupAll] = useState(false);
+  const [checking, setChecking] = useState(false);
   const tools = data ?? [];
   const installed = tools.filter((tool) => tool.installed).length;
   const shown = tools.filter((tool) => filter === "all" || (filter === "installed") === tool.installed);
@@ -38,6 +40,10 @@ export function ToolsPage() {
             <Button variant="secondary" size="sm" onClick={() => void refetch()} disabled={isFetching}>
               {isFetching ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
               {t("common.refresh")}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setChecking(true)}>
+              <Stethoscope className="h-4 w-4" aria-hidden />
+              {t("checkup.button")}
             </Button>
             <Button size="sm" onClick={() => setSetupAll(true)} disabled={sites.length === 0} title={sites.length === 0 ? t("tools.needSite") : undefined}>
               <Sparkles className="h-4 w-4" aria-hidden />
@@ -68,6 +74,7 @@ export function ToolsPage() {
       </div>
       {data && shown.length === 0 && <p className="py-10 text-center text-sm text-muted-foreground">{t("tools.filter.empty")}</p>}
       <SetupDialog open={setupAll} initialSiteId={current?.id} onClose={() => setSetupAll(false)} />
+      <CheckupDialog open={checking} onClose={() => setChecking(false)} />
     </div>
   );
 }

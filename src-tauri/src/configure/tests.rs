@@ -182,6 +182,44 @@ async fn mount_site(server: &MockServer, codex_creations: u64) {
 const CODEX_BEFORE: &str = "# 自己的设置\nmodel = \"o3\"\napproval_policy = \"never\"\n";
 
 #[tokio::test]
+async fn setup_plan_reuses_the_last_choice_on_a_site() {
+    let server = MockServer::start().await;
+    mount_site(&server, 1).await;
+    let fixture = fixture(&server, "plan-choice");
+    fixture
+        .configurator
+        .apply(
+            &fixture.accounts,
+            ToolKind::Codex,
+            &fixture.site_id,
+            Some("2"),
+            Some("gpt-5.5"),
+        )
+        .await
+        .unwrap();
+    let plan = fixture
+        .configurator
+        .plan(&fixture.accounts, &fixture.site_id)
+        .await
+        .unwrap();
+    let codex = plan
+        .tools
+        .iter()
+        .find(|tool| tool.kind == ToolKind::Codex)
+        .unwrap();
+    assert!(codex.remembered);
+    assert_eq!(codex.recommended_group.as_deref(), Some("2"));
+    assert_eq!(codex.recommended_model.as_deref(), Some("gpt-5.5"));
+    let claude = plan
+        .tools
+        .iter()
+        .find(|tool| tool.kind == ToolKind::ClaudeCode)
+        .unwrap();
+    assert!(!claude.remembered);
+    assert_eq!(claude.recommended_group.as_deref(), Some("1"));
+}
+
+#[tokio::test]
 async fn configures_tests_switches_models_and_restores_codex() {
     let server = MockServer::start().await;
     mount_site(&server, 1).await;
@@ -393,6 +431,7 @@ fn recommends_groups_by_platform_or_name() {
         description: description.into(),
         ratio: None,
         platform: platform.map(str::to_string),
+        subscription: false,
     };
     let newapi = [
         group("default", "default", "默认分组", None),
@@ -796,6 +835,7 @@ fn recommends_groups_for_the_new_tools() {
         description: String::new(),
         ratio: None,
         platform: platform.map(str::to_string),
+        subscription: false,
     };
     let sub2api = vec![
         group("2", "Codex", Some("openai")),

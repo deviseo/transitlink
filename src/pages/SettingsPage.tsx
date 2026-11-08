@@ -7,6 +7,8 @@ import { Button } from "../components/ui/button";
 import { SectionCard } from "../components/ui/card";
 import { Segmented } from "../components/ui/segmented";
 import { Switch } from "../components/ui/switch";
+import { MigrationCard } from "../components/migrate/MigrationCard";
+import { AlertsCard } from "../components/settings/AlertsCard";
 import { languages } from "../i18n";
 import { checkUpdate, getAppInfo, getAppSettings, installUpdate, setCloseToTray } from "../lib/api";
 import { errorText } from "../lib/errors";
@@ -60,6 +62,8 @@ export function SettingsPage() {
         </div>
         {closeToTray.isError && <p className="mt-2 text-[13px] text-danger">{errorText(t, closeToTray.error)}</p>}
       </SectionCard>
+      <AlertsCard />
+      <MigrationCard />
       <SectionCard title={t("settings.about")}>
         <div className="divide-y divide-border/70">
           <SettingRow title={t("settings.version")} description={info ? `TransitLink ${info.version}` : undefined}>

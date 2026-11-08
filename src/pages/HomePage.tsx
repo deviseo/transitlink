@@ -4,12 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, KeyRound, Link2, LoaderCircle, Sparkles, Terminal } from "lucide-react";
 import { SiteNotice } from "../components/home/SiteNotice";
 import { ToolsSummary } from "../components/home/ToolsSummary";
+import { PendingRestore } from "../components/migrate/MigrationCard";
 import { BrandMark } from "../components/layout/BrandMark";
 import { ReloginNotice } from "../components/sites/ReloginNotice";
 import { SiteAvatar } from "../components/sites/SiteAvatar";
 import { buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { detectTools, isCommandError, siteAccount, type SiteView } from "../lib/api";
+import { pendingRestore } from "../lib/migrate";
 import { siteHost, siteName, useCurrentSite } from "../lib/currentSite";
 import { errorText } from "../lib/errors";
 import { useActiveBrand } from "../lib/useActiveBrand";
@@ -54,9 +56,22 @@ function Overview({ site }: { site: SiteView }) {
         {brand.welcome && <p className="relative mt-4 border-t border-border/70 pt-3 text-[13px] text-muted-foreground">{brand.welcome}</p>}
       </section>
       <ReloginNotice site={site} />
+      <RestoreNotice />
       <ToolsSummary site={site} />
       <SiteNotice brand={brand} />
     </div>
+  );
+}
+
+/** 从旧电脑的备份导入、还没恢复的工具：登录站点后一键恢复。 */
+function RestoreNotice() {
+  const { t } = useTranslation();
+  const pending = useQuery({ queryKey: ["pending-restore"], queryFn: pendingRestore });
+  if (!pending.data || pending.data.length === 0) return null;
+  return (
+    <Card>
+      <PendingRestore pending={pending.data} title={t("migrate.noticeTitle")} />
+    </Card>
   );
 }
 

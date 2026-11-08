@@ -56,8 +56,10 @@ export interface ToolPlan {
   recommendedGroup: string | null;
   /** 推荐的分组是站长指定的，或者按名称、平台认出来的。 */
   matched: boolean;
-  /** 站长推荐的模型。 */
+  /** 站长推荐的模型（remembered 时是上次选的模型）。 */
   recommendedModel: string | null;
+  /** 分组和模型是在这个站点上选过的（或者从备份导入的），不是推荐的。 */
+  remembered: boolean;
 }
 
 export interface SetupPlan {
@@ -150,6 +152,9 @@ export interface AccountSummary {
   balanceUsd: number;
 }
 
+/** Key 在站点上的状态。 */
+export type KeyStatus = "active" | "disabled" | "expired" | "exhausted";
+
 export interface KeySummary {
   id: string;
   name: string;
@@ -157,6 +162,11 @@ export interface KeySummary {
   masked: boolean;
   group: string | null;
   enabled: boolean;
+  status: KeyStatus;
+  /** 剩余额度（美元）；null 表示不限额度。 */
+  remainingUsd: number | null;
+  /** 到期时间（Unix 秒）；null 表示永不过期。 */
+  expiresAt: number | null;
 }
 
 export interface GroupSummary {
@@ -165,6 +175,8 @@ export interface GroupSummary {
   description: string;
   ratio: number | null;
   platform: string | null;
+  /** sub2api 的订阅分组（用订阅的额度，不扣余额）。 */
+  subscription?: boolean;
 }
 
 /** Rust 命令返回的错误：code 对应 errors.* 文案，message 是站点自己的说明或出错的文件。 */
@@ -204,8 +216,9 @@ const previewConfig: SiteConfig = {
 };
 const previewSites: SiteView[] = [];
 const previewKeys: KeySummary[] = [
-  { id: "1", name: "TransitLink Claude Code", key: "sk-ab12**********yz89", masked: true, group: "claude", enabled: true },
-  { id: "2", name: "默认", key: "sk-cd34**********wx67", masked: true, group: null, enabled: false },
+  { id: "1", name: "TransitLink Claude Code", key: "sk-ab12**********yz89", masked: true, group: "claude", enabled: true, status: "active", remainingUsd: null, expiresAt: null },
+  { id: "3", name: "脚本用", key: "sk-ef56**********uv45", masked: true, group: "codex", enabled: true, status: "active", remainingUsd: 3.5, expiresAt: Math.floor(Date.now() / 1000) + 20 * 24 * 3600 },
+  { id: "2", name: "默认", key: "sk-cd34**********wx67", masked: true, group: null, enabled: false, status: "disabled", remainingUsd: null, expiresAt: null },
 ];
 
 function previewError(code: string): never {
@@ -460,7 +473,7 @@ export const siteGroups = (id: string) =>
 
 export const createSiteKey = (id: string, name: string, group: string | null) =>
   call<KeySummary>("create_site_key", () => {
-    const key: KeySummary = { id: String(previewKeys.length + 1), name, key: "sk-prev**********0000", masked: true, group, enabled: true };
+    const key: KeySummary = { id: String(previewKeys.length + 1), name, key: "sk-prev**********0000", masked: true, group, enabled: true, status: "active", remainingUsd: null, expiresAt: null };
     previewKeys.unshift(key);
     return { ...key };
   }, { id, name, group });
@@ -475,19 +488,21 @@ export const setupPlan = (siteId: string) =>
       { id: "gemini", name: "gemini", description: "Gemini 专用", ratio: 1, platform: null },
     ],
     balanceUsd: 12.34,
-    tools: [
-      { kind: "claudeCode", recommendedGroup: "claude", matched: true, recommendedModel: null },
-      { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex?.model || null },
-      { kind: "geminiCli", recommendedGroup: "gemini", matched: true, recommendedModel: null },
-      { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
-      { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },
-      { kind: "deepseekHarness", recommendedGroup: "default", matched: false, recommendedModel: null },
-      { kind: "pi", recommendedGroup: "claude", matched: true, recommendedModel: null },
-      { kind: "ohMyPi", recommendedGroup: "claude", matched: true, recommendedModel: null },
-      { kind: "kimiCode", recommendedGroup: "default", matched: false, recommendedModel: null },
-      { kind: "minimaxCode", recommendedGroup: "default", matched: false, recommendedModel: null },
-      { kind: "openclaw", recommendedGroup: "claude", matched: true, recommendedModel: null },
-    ],
+    tools: (
+      [
+        { kind: "claudeCode", recommendedGroup: "claude", matched: true, recommendedModel: null },
+        { kind: "codex", recommendedGroup: "codex", matched: true, recommendedModel: previewSites.find((site) => site.id === siteId)?.config?.recommend.codex?.model || null },
+        { kind: "geminiCli", recommendedGroup: "gemini", matched: true, recommendedModel: null },
+        { kind: "grokBuild", recommendedGroup: "default", matched: false, recommendedModel: null },
+        { kind: "opencode", recommendedGroup: "claude", matched: true, recommendedModel: null },
+        { kind: "deepseekHarness", recommendedGroup: "default", matched: false, recommendedModel: null },
+        { kind: "pi", recommendedGroup: "claude", matched: true, recommendedModel: null },
+        { kind: "ohMyPi", recommendedGroup: "claude", matched: true, recommendedModel: null },
+        { kind: "kimiCode", recommendedGroup: "default", matched: false, recommendedModel: null },
+        { kind: "minimaxCode", recommendedGroup: "default", matched: false, recommendedModel: null },
+        { kind: "openclaw", recommendedGroup: "claude", matched: true, recommendedModel: null },
+      ] satisfies Omit<ToolPlan, "remembered">[]
+    ).map((tool) => ({ ...tool, remembered: false })),
   }), { siteId });
 
 /** 一键配置一个工具：专用 Key → 测试 → 备份 → 写配置。预览时选错分组（Claude Code 选 codex）演示失败。 */
@@ -549,11 +564,21 @@ export const checkUpdate = () => call<UpdateInfo | null>("check_update", () => n
 /** 下载并安装新版本，装好后应用会自动重启。 */
 export const installUpdate = () => call<null>("install_update", () => null);
 
+/** 余额和 Key 提醒。 */
+export interface AlertSettings {
+  enabled: boolean;
+  /** 余额（美元）低于这个数就提醒；工具用的 Key 剩余额度低于它也提醒。 */
+  balanceBelow: number;
+  /** 工具用的 Key 停用、过期、额度用完或快到期时提醒。 */
+  keys: boolean;
+}
+
 export interface AppSettings {
   closeToTray: boolean;
   language: string;
   /** 界面上的当前站点（没选过时没有，界面自己挑一个，见 useCurrentSite）。 */
   currentSite?: string | null;
+  alerts: AlertSettings;
 }
 
 /** 切换站点的结果：应用里切换（switchTools）和托盘切换（tray-switched 事件）都用它。 */
@@ -563,7 +588,7 @@ export interface SwitchReport {
   failures: { kind: ToolKind; error: CommandError }[];
 }
 
-const previewSettings: AppSettings = { closeToTray: true, language: "zh-CN" };
+const previewSettings: AppSettings = { closeToTray: true, language: "zh-CN", alerts: { enabled: true, balanceBelow: 2, keys: true } };
 
 export const getAppSettings = () => call<AppSettings>("app_settings", () => ({ ...previewSettings }));
 
@@ -573,6 +598,13 @@ export const setCloseToTray = (enabled: boolean) =>
     previewSettings.closeToTray = enabled;
     return { ...previewSettings };
   }, { enabled });
+
+/** 改提醒设置（改完桌面端马上按新设置查一次）。 */
+export const setAlertSettings = (alerts: AlertSettings) =>
+  call<AppSettings>("set_alert_settings", () => {
+    previewSettings.alerts = { ...alerts };
+    return { ...previewSettings, alerts: { ...previewSettings.alerts } };
+  }, { alerts });
 
 /** 告诉桌面端界面语言，托盘菜单用同一种语言。 */
 export const setLanguage = (language: string) => call<null>("set_language", () => null, { language });
@@ -584,10 +616,14 @@ export const setCurrentSite = (siteId: string | null) =>
     return { ...previewSettings };
   }, { siteId });
 
+/** 预览：重新配置过的工具（体检的示例结果里它们的问题就算修好了）。 */
+export const previewReconfigured = new Set<ToolKind>();
+
 /** 把这些工具切到这个站点（沿用在那个站点上选过的分组和模型）。 */
 export const switchTools = (siteId: string, kinds: ToolKind[]) =>
   call<SwitchReport>("switch_tools", async () => {
     await pause(600);
+    kinds.forEach((kind) => previewReconfigured.add(kind));
     const site = previewSites.find((item) => item.id === siteId) ?? previewSite;
     for (const kind of kinds) {
       const tool = previewTool(kind);

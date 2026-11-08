@@ -103,6 +103,24 @@ impl ToolKind {
         }
     }
 
+    /// 工具的名字（通知里用；界面上的名字在前端的语言包里）。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ToolKind::ClaudeCode => "Claude Code",
+            ToolKind::Codex => "Codex",
+            ToolKind::GeminiCli => "Gemini CLI",
+            ToolKind::GrokBuild => "Grok Build",
+            ToolKind::OpenCode => "OpenCode",
+            ToolKind::DeepseekHarness => "DeepSeek Harness",
+            ToolKind::Pi => "Pi",
+            ToolKind::OhMyPi => "Oh My Pi",
+            ToolKind::KimiCode => "Kimi Code",
+            ToolKind::MinimaxCode => "MiniMax Code",
+            ToolKind::OpenClaw => "OpenClaw",
+            ToolKind::Antigravity => "Antigravity CLI",
+        }
+    }
+
     /// 一键配置时给这个工具建的专用 Key 的名字。
     pub fn key_name(self) -> &'static str {
         match self {
@@ -239,6 +257,91 @@ pub fn on_shell_path(home: &Path, dir: &Path) -> bool {
     }
 }
 
+/// 用户在终端里能看到的这几个环境变量（设成空字符串的也算设置了）。macOS 上从程序坞打开的应用拿不到终端里设置的
+/// 变量，所以跑一次登录 shell 读；整份环境变量只在内存里挑出要的这几个，不保存、不记录。
+/// Windows 上从桌面启动的程序本来就继承用户的环境变量，直接读本进程的。读不到时返回 None（宁可漏报）。
+pub fn shell_env(names: &[&str]) -> Option<std::collections::HashMap<String, String>> {
+    #[cfg(windows)]
+    {
+        Some(
+            names
+                .iter()
+                .filter_map(|name| {
+                    std::env::var(name)
+                        .ok()
+                        .map(|value| (name.to_string(), value))
+                })
+                .collect(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") {
+                "/bin/zsh".into()
+            } else {
+                "/bin/bash".into()
+            }
+        });
+        let mut command = Command::new(shell);
+        // 只用 echo 和 env：bash、zsh、fish 都认。`env -0` 用 NUL 分隔，值里有换行也不会读错。
+        command.args(["-ilc", "echo __TL_ENV__; env -0"]);
+        let output = run_quietly(command, Duration::from_secs(5))?;
+        parse_env_listing(&String::from_utf8_lossy(&output), names)
+    }
+}
+
+/// 从 `echo __TL_ENV__; env -0` 的输出里挑出要的变量（标记前面是登录时 shell 自己打印的东西）。
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_env_listing(
+    text: &str,
+    names: &[&str],
+) -> Option<std::collections::HashMap<String, String>> {
+    let (_, listing) = text.rsplit_once("__TL_ENV__")?;
+    Some(
+        listing
+            .split('\0')
+            .map(|entry| entry.trim_start_matches(['\r', '\n']))
+            .filter_map(|entry| entry.split_once('='))
+            .filter(|(name, _)| names.contains(name))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect(),
+    )
+}
+
+/// 在常见的终端配置文件里找设置了这个变量的行（「~/.zshrc:12」），告诉用户去哪里改。
+pub fn rc_locations(home: &Path, name: &str) -> Vec<String> {
+    const FILES: [&str; 7] = [
+        ".zshrc",
+        ".zprofile",
+        ".zshenv",
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+        ".config/fish/config.fish",
+    ];
+    let mut found = Vec::new();
+    for file in FILES {
+        let Ok(text) = std::fs::read_to_string(home.join(file)) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let line = line.trim_start();
+            if line.starts_with('#') {
+                continue;
+            }
+            let sets = line.starts_with(&format!("{name}="))
+                || line.contains(&format!("export {name}="))
+                || line.contains(&format!("set -gx {name} "))
+                || line.contains(&format!("set -x {name} "));
+            if sets {
+                found.push(format!("~/{file}:{}", index + 1));
+            }
+        }
+    }
+    found
+}
+
 #[cfg(not(windows))]
 fn shell_path() -> Option<OsString> {
     // 从桌面启动的应用可能没有 SHELL：macOS 默认 zsh。
@@ -284,11 +387,25 @@ fn run_quietly(mut command: Command, limit: Duration) -> Option<Vec<u8>> {
     }
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let _ = stdout.read_to_end(&mut output);
-        output
-    });
+    // 边读边存：shell 启动的后台程序可能一直占着输出（读不到结尾），这时用已经读到的。
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    {
+        let buffer = buffer.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => buffer
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .extend_from_slice(&chunk[..read]),
+                }
+            }
+            let _ = done.send(());
+        });
+    }
     let deadline = Instant::now() + limit;
     loop {
         match child.try_wait() {
@@ -301,7 +418,13 @@ fn run_quietly(mut command: Command, limit: Duration) -> Option<Vec<u8>> {
             }
         }
     }
-    reader.join().ok()
+    // 命令结束了，再给输出一点时间读完。
+    let _ = finished.recv_timeout(Duration::from_millis(500));
+    let output = buffer
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    Some(output)
 }
 
 /// 找命令。老的 Python 版 kimi-cli 也叫 `kimi`：跳过它（和 Kimi 官方安装脚本一样，看真实文件开头
@@ -472,6 +595,28 @@ pub fn parse_version(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_only_the_wanted_variables_after_the_marker() {
+        let output = "Welcome!\nHTTPS_PROXY=fake-banner\n__TL_ENV__\nPATH=/bin\0HTTPS_PROXY=http://127.0.0.1:7890\0NOTE=line one\nCODEX_HOME=/not/real\0OMP_PROFILE=\0";
+        let found =
+            parse_env_listing(output, &["HTTPS_PROXY", "CODEX_HOME", "OMP_PROFILE"]).unwrap();
+        assert_eq!(
+            found.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            found.get("CODEX_HOME"),
+            None,
+            "a newline inside a value is not a new variable"
+        );
+        assert_eq!(
+            found.get("OMP_PROFILE").map(String::as_str),
+            Some(""),
+            "set but empty still counts"
+        );
+        assert_eq!(parse_env_listing("no marker", &["PATH"]), None);
+    }
 
     #[test]
     fn parses_versions_from_cli_output() {

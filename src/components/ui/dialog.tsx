@@ -1,5 +1,8 @@
-import { useEffect, useId, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
+
+/** 打开着的对话框，后打开的在上面。Esc 只关最上面的那个（例如导入窗口里又打开了登录窗口）。 */
+const openDialogs: symbol[] = [];
 
 /** 简单的模态框：遮罩、标题、Esc 关闭。 */
 export function Dialog({
@@ -19,14 +22,24 @@ export function Dialog({
   wide?: boolean;
 }) {
   const titleId = useId();
+  // onClose 每次渲染可能都是新函数：放进 ref，免得对话框重新排到最上面。
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  });
   useEffect(() => {
     if (!open) return;
+    const id = Symbol("dialog");
+    openDialogs.push(id);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && openDialogs[openDialogs.length - 1] === id) close.current();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      openDialogs.splice(openDialogs.indexOf(id), 1);
+    };
+  }, [open]);
 
   if (!open) return null;
   return (

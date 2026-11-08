@@ -13,6 +13,7 @@ import { SiteSwitcher } from "./SiteSwitcher";
 import { TrayEvents } from "./TrayEvents";
 import { MinVersionBanner } from "./MinVersionBanner";
 import { UpdateBanner } from "./UpdateBanner";
+import { AlertsBanner } from "../health/AlertsBanner";
 import { getAppInfo } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import { inDesktop } from "../../lib/tauri";
@@ -114,6 +115,7 @@ export function AppLayout() {
           )}
           <MinVersionBanner />
           <UpdateBanner />
+          <AlertsBanner />
           <TrayEvents />
           <LinkEvents />
           <div className="min-h-0 flex-1 overflow-y-auto">

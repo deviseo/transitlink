@@ -8,7 +8,9 @@ mod accounts;
 mod clock;
 mod commands;
 mod configure;
+mod health;
 mod install;
+mod migrate;
 mod paths;
 mod secrets;
 mod settings;
@@ -67,6 +69,11 @@ pub fn run() {
         .manage(tickets)
         .manage(commands::PendingLink::default())
         .manage(install::Installer::default())
+        .manage(health::alerts::AlertCenter::default())
+        .manage(migrate::PendingStore::new(
+            paths::app_data_dir().join("migration.json"),
+        ))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -75,6 +82,8 @@ pub fn run() {
             {
                 tray::create(_app.handle())?;
                 watch_site_links(_app);
+                // 余额和 Key 提醒：后台定时查。
+                tauri::async_runtime::spawn(health::alerts::watch(_app.handle().clone()));
             }
             // Windows / Linux 的开发版和免安装版需要在运行时注册 transitlink:// 协议；
             // macOS 由安装包里的 Info.plist 注册。
@@ -151,6 +160,16 @@ pub fn run() {
             commands::ticket_reply,
             commands::ticket_close,
             commands::ticket_attachment,
+            commands::run_checkup,
+            commands::alerts,
+            commands::refresh_alerts,
+            commands::set_alert_settings,
+            commands::export_backup,
+            commands::preview_backup,
+            commands::import_backup,
+            commands::pending_restore,
+            commands::restore_pending,
+            commands::dismiss_pending,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TransitLink")

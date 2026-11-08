@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use super::http::{Http, JsonResponse, cookie_header, flag, number, text};
 use super::{
-    AccountSummary, Credential, GroupSummary, KeySummary, LoginStep, Platform, SiteError, SiteInfo,
-    absolute_url, crypto,
+    AccountSummary, Credential, GroupSummary, KeyStatus, KeySummary, LoginStep, Platform,
+    SiteError, SiteInfo, absolute_url, crypto,
 };
 
 /// 个人访问令牌的权限，只要用得到的：读账号、分组和模型；管理并查看完整 Key；读用量和钱包。
@@ -414,7 +414,11 @@ pub async fn list_keys(
     credential: &Credential,
 ) -> Result<Vec<KeySummary>, SiteError> {
     let request = authorize(
-        http.get(&format!("{}/api/token/?p=1&page_size=100", info.base_url)),
+        http.get(&format!(
+            "{}/api/token/?p=1&page_size={}",
+            info.base_url,
+            super::KEY_PAGE
+        )),
         credential,
     );
     let data = data_of(http.send(request).await?)?;
@@ -424,25 +428,49 @@ pub async fn list_keys(
         .or_else(|| data.as_array())
         .cloned()
         .unwrap_or_default();
+    let per_unit = info
+        .quota_per_unit
+        .filter(|value| *value > 0.0)
+        .unwrap_or(500_000.0);
     Ok(items
         .iter()
-        .filter_map(|item| {
-            let key = text(item, "key").unwrap_or_default();
-            Some(KeySummary {
-                id: text(item, "id")?,
-                name: text(item, "name").unwrap_or_default(),
-                masked: key.contains('*'),
-                // 站点存的 Key 不带 sk-，打码的也一样；统一加上前缀，和站点页面显示的一致。
-                key: if key.is_empty() || key.starts_with("sk-") {
-                    key
-                } else {
-                    format!("sk-{key}")
-                },
-                group: text(item, "group").filter(|group| !group.is_empty()),
-                enabled: number(item, "status") == Some(1.0),
-            })
-        })
+        .filter_map(|item| key_summary(item, per_unit))
         .collect())
+}
+
+/// 一个令牌。`per_unit`：站点额度单位换成美元的倍数（quota_per_unit）。
+fn key_summary(item: &Value, per_unit: f64) -> Option<KeySummary> {
+    let key = text(item, "key").unwrap_or_default();
+    // 状态：1 启用、2 停用、3 过期、4 额度用完。
+    let status = match number(item, "status").map(|value| value as i64) {
+        Some(1) => KeyStatus::Active,
+        Some(3) => KeyStatus::Expired,
+        Some(4) => KeyStatus::Exhausted,
+        _ => KeyStatus::Disabled,
+    };
+    Some(KeySummary {
+        id: text(item, "id")?,
+        name: text(item, "name").unwrap_or_default(),
+        masked: key.contains('*'),
+        // 站点存的 Key 不带 sk-，打码的也一样；统一加上前缀，和站点页面显示的一致。
+        key: if key.is_empty() || key.starts_with("sk-") {
+            key
+        } else {
+            format!("sk-{key}")
+        },
+        group: text(item, "group").filter(|group| !group.is_empty()),
+        enabled: status == KeyStatus::Active,
+        status,
+        // 额度是站点内部单位，按 quota_per_unit 换成美元；不限额度时没有剩余额度。
+        remaining_usd: (!flag(item, "unlimited_quota"))
+            .then(|| number(item, "remain_quota"))
+            .flatten()
+            .map(|quota| quota.max(0.0) / per_unit),
+        // -1 表示永不过期。
+        expires_at: number(item, "expired_time")
+            .filter(|time| *time > 0.0)
+            .map(|time| time as i64),
+    })
 }
 
 /// 取完整 Key（新版需要；每次调用都计入站点的限流，所以一次批量取）。
@@ -502,6 +530,7 @@ pub async fn groups(
             description: text(detail, "desc").unwrap_or_default(),
             ratio: number(detail, "ratio"),
             platform: None,
+            subscription: false,
         })
         .collect();
     groups.sort_by(|a, b| a.name.cmp(&b.name));
@@ -585,6 +614,30 @@ pub(crate) async fn unmask(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_carry_status_quota_and_expiry() {
+        let limited = key_summary(
+            &json!({ "id": 7, "name": "cc", "key": "abcd****wxyz", "group": "claude", "status": 4,
+                     "unlimited_quota": false, "remain_quota": 250000, "expired_time": 1798704000 }),
+            500_000.0,
+        )
+        .unwrap();
+        assert_eq!(limited.status, KeyStatus::Exhausted);
+        assert!(!limited.enabled);
+        assert_eq!(limited.remaining_usd, Some(0.5));
+        assert_eq!(limited.expires_at, Some(1_798_704_000));
+        let unlimited = key_summary(
+            &json!({ "id": 8, "name": "cx", "key": "sk-full", "status": 1,
+                     "unlimited_quota": true, "remain_quota": 0, "expired_time": -1 }),
+            500_000.0,
+        )
+        .unwrap();
+        assert_eq!(unlimited.status, KeyStatus::Active);
+        assert!(unlimited.enabled);
+        assert_eq!(unlimited.remaining_usd, None);
+        assert_eq!(unlimited.expires_at, None);
+    }
     use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

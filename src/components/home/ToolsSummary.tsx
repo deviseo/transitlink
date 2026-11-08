@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, LoaderCircle, Sparkles } from "lucide-react";
+import { ArrowRight, LoaderCircle, Sparkles, Stethoscope } from "lucide-react";
+import { CheckupDialog } from "../health/CheckupDialog";
 import { SetupDialog } from "../tools/SetupDialog";
 import { ToolIcon } from "../tools/ToolIcon";
 import { Dot } from "../ui/badge";
@@ -32,15 +33,22 @@ export function ToolsSummary({ site }: { site: SiteView }) {
   const { t } = useTranslation();
   const tools = useQuery({ queryKey: ["tools"], queryFn: detectTools });
   const [setup, setSetup] = useState<ToolOverview["kind"] | null>(null);
+  const [checking, setChecking] = useState(false);
   const list = shown(tools.data ?? []);
   return (
     <SectionCard
       title={t("overview.tools")}
       action={
-        <Link to="/tools" className={buttonVariants({ variant: "ghost", size: "sm" })}>
-          {t("overview.viewTools")}
-          <ArrowRight className="h-4 w-4" aria-hidden />
-        </Link>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setChecking(true)}>
+            <Stethoscope className="h-4 w-4" aria-hidden />
+            {t("checkup.button")}
+          </Button>
+          <Link to="/tools" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+            {t("overview.viewTools")}
+            <ArrowRight className="h-4 w-4" aria-hidden />
+          </Link>
+        </div>
       }
     >
       {tools.isLoading && <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden />}
@@ -50,6 +58,7 @@ export function ToolsSummary({ site }: { site: SiteView }) {
         ))}
       </ul>
       <SetupDialog open={setup !== null} only={setup ?? undefined} initialSiteId={site.id} onClose={() => setSetup(null)} />
+      <CheckupDialog open={checking} onClose={() => setChecking(false)} />
     </SectionCard>
   );
 }

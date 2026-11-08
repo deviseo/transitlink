@@ -524,6 +524,40 @@ impl Accounts {
             .collect()
     }
 
+    /// 所有站点记录（不含凭证），导出备份用。
+    pub fn records(&self) -> Result<Vec<SiteRecord>, SiteError> {
+        self.store.list().map_err(storage)
+    }
+
+    /// 从备份导入一个站点（没有凭证：用的时候提示重新登录）。同一站点同一账号已经有了就用已有的，
+    /// 不改它。返回站点 ID 和是不是新加的。
+    pub fn import_site(
+        &self,
+        info: SiteInfo,
+        account: &str,
+        added_at: u64,
+        config_url: Option<String>,
+        config: Option<SiteConfig>,
+    ) -> Result<(String, bool), SiteError> {
+        if let Some(existing) = self.store.find(&info.base_url, account).map_err(storage)? {
+            return Ok((existing.id, false));
+        }
+        let record = SiteRecord {
+            id: new_id(),
+            info,
+            account: account.to_string(),
+            added_at,
+            config_url,
+            config,
+            // 马上重新读一次站长配置。
+            config_fetched_at: 0,
+            // 用工单前在这台电脑上再确认一次。
+            ticket_hub: None,
+        };
+        self.store.upsert(record.clone()).map_err(storage)?;
+        Ok((record.id, true))
+    }
+
     /// 站点记录（不含凭证）。
     pub fn site(&self, id: &str) -> Result<SiteRecord, SiteError> {
         self.store
@@ -542,6 +576,7 @@ impl Accounts {
     ) -> Result<(KeySummary, bool), SiteError> {
         let name = name.to_string();
         let group_id = group_id.map(str::to_string);
+        let now = i64::try_from(crate::clock::now_secs()).unwrap_or(i64::MAX);
         self.call(id, |http, info, credential| {
             let name = name.clone();
             let group_id = group_id.clone();
@@ -554,7 +589,7 @@ impl Accounts {
                             .await?
                             .into_iter()
                             .filter(|key| {
-                                key.enabled
+                                key.usable(now)
                                     && key.name == name
                                     && key.group.clone().unwrap_or_default() == wanted
                             })
@@ -588,7 +623,9 @@ impl Accounts {
                         let existing = sub2api::list_keys(http, info, credential)
                             .await?
                             .into_iter()
-                            .filter(|key| key.enabled && key.name == name && key.group == wanted)
+                            .filter(|key| {
+                                key.usable(now) && key.name == name && key.group == wanted
+                            })
                             .max_by_key(|key| key.id.parse::<i64>().unwrap_or(0));
                         match existing {
                             Some(key) => Ok((key, false)),
@@ -668,6 +705,14 @@ impl Accounts {
         let refreshed = sub2api::refresh(&self.site_http(info), info, stale).await?;
         self.store_credential(id, &refreshed)?;
         Ok(refreshed)
+    }
+
+    /// 体检用：请求一次站点的公开接口，返回用了多少毫秒（不需要登录）。
+    pub async fn ping(&self, id: &str) -> Result<u64, SiteError> {
+        let record = self.site(id)?;
+        let started = std::time::Instant::now();
+        crate::sites::ping(&self.site_http(&record.info), &record.info).await?;
+        Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
     }
 
     pub async fn account(&self, id: &str) -> Result<AccountSummary, SiteError> {

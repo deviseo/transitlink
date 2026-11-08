@@ -187,7 +187,11 @@ pub async fn fetch(http: &Http, config_url: &str) -> Result<SiteConfig, SiteErro
 }
 
 /// 规范化地址、限制长度、去掉不合法的颜色和图片地址。站点地址和平台不对时整份配置不用。
-fn sanitize(mut config: SiteConfig, config_url: &url::Url) -> Result<SiteConfig, SiteError> {
+/// 从备份文件导入的配置也走这一遍。
+pub(crate) fn sanitize(
+    mut config: SiteConfig,
+    config_url: &url::Url,
+) -> Result<SiteConfig, SiteError> {
     config.site.base_url =
         normalize_url(&config.site.base_url).map_err(|_| SiteError::LinkInvalid)?;
     if !matches!(config.site.platform.as_str(), "newapi" | "sub2api") {

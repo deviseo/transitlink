@@ -32,7 +32,8 @@ use crate::sites::http::Http;
 use crate::sites::{GroupSummary, Platform, SiteError};
 use crate::tools::{self, ToolKind, ToolStatus};
 use probe::TestResult;
-use state::{Applied, Choice, ToolState};
+pub use state::Choice;
+use state::{Applied, ToolState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigError {
@@ -134,6 +135,19 @@ pub struct ToolPlan {
     pub matched: bool,
     /// 站长推荐的模型（没有时由工具自己决定，Codex 自动挑）。
     pub recommended_model: Option<String>,
+    /// 分组和模型是在这个站点上选过的（或者从备份导入的），不是推荐的。
+    pub remembered: bool,
+}
+
+/// 体检时用工具配置里的 Key 拉模型列表的结果。
+#[derive(Debug, Clone)]
+pub struct Diagnosis {
+    pub test: TestResult,
+    /// 站点给这个 Key 的模型（测试没通过时是空的）。
+    pub ids: Vec<String>,
+    /// 配置里现在的模型。
+    pub model: Option<String>,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,6 +257,9 @@ fn read_connection(kind: ToolKind, text: Option<&str>) -> Result<Connection, Con
 }
 
 type EnvLookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// 按名字查环境变量。
+pub type EnvFn<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 pub struct Configurator {
     http: Http,
@@ -363,6 +380,21 @@ impl Configurator {
             .iter()
             .filter(|kind| kind.configurable())
             .map(|kind| {
+                // 在这个站点上给它选过（或者从备份导入了）分组和模型：默认还用它们。
+                if let Some(choice) = self.state.choice(site_id, *kind)
+                    && let Some(group) = choice
+                        .group_id
+                        .as_ref()
+                        .filter(|group| groups.iter().any(|known| &&known.id == group))
+                {
+                    return ToolPlan {
+                        kind: *kind,
+                        recommended_group: Some(group.clone()),
+                        matched: true,
+                        recommended_model: choice.model.clone().filter(|model| !model.is_empty()),
+                        remembered: true,
+                    };
+                }
                 let site_recommend = operator_recommend(site.config.as_ref(), *kind);
                 let (recommended_group, matched) = recommend(
                     *kind,
@@ -378,6 +410,7 @@ impl Configurator {
                     recommended_model: site_recommend
                         .map(|recommend| recommend.model.clone())
                         .filter(|model| !model.is_empty()),
+                    remembered: false,
                 }
             })
             .collect();
@@ -787,6 +820,91 @@ impl Configurator {
         self.state.remember(&applied.site_id, kind, choice)?;
         self.state.set(kind, applied.clone())?;
         Ok(())
+    }
+
+    /// 用 TransitLink 配置过的工具和当时的记录（体检、提醒、迁移用）。
+    pub fn applied_all(&self) -> Vec<(ToolKind, Applied)> {
+        self.state.all()
+    }
+
+    /// 在这个站点上给这个工具选过的分组和模型。
+    pub fn choice(&self, site_id: &str, kind: ToolKind) -> Option<Choice> {
+        self.state.choice(site_id, kind)
+    }
+
+    /// 记下在某个站点上给工具选的分组和模型（测试里准备数据用）。
+    #[cfg(test)]
+    pub fn remember(
+        &self,
+        site_id: &str,
+        kind: ToolKind,
+        choice: Choice,
+    ) -> Result<(), ConfigError> {
+        self.state.remember(site_id, kind, choice)?;
+        Ok(())
+    }
+
+    /// 导入备份：一次记下多个选择（下次一键配置、切换都沿用它们），这台电脑上已经有的不覆盖。
+    pub fn remember_missing(
+        &self,
+        choices: &[(String, ToolKind, Choice)],
+    ) -> Result<usize, ConfigError> {
+        Ok(self.state.remember_missing(choices)?)
+    }
+
+    /// 体检用：用工具配置里现在的地址和 Key 拉一次模型列表，记下用了多久。
+    pub async fn diagnose(&self, kind: ToolKind) -> Result<Diagnosis, ConfigError> {
+        let connection = self.connection(kind)?;
+        let (Some(base_url), Some(token)) = (connection.base_url, connection.token) else {
+            return Err(ConfigError::NotConfigured);
+        };
+        let started = std::time::Instant::now();
+        let listed = probe::list_models(&self.http, &base_url, &token).await;
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let (test, ids) = match listed {
+            Ok(ids) => (probe::summarize(kind, &ids), ids),
+            Err(result) => (result, Vec::new()),
+        };
+        Ok(Diagnosis {
+            test,
+            ids,
+            model: connection.model,
+            elapsed_ms,
+        })
+    }
+
+    /// 工具读的配置文件。`env` 为 None 时按应用自己的环境变量算（也就是 TransitLink 写的位置），
+    /// 体检时传终端里的环境变量，看工具实际读的是不是同一个地方。
+    pub fn config_files(&self, kind: ToolKind, env: Option<EnvFn<'_>>) -> Vec<PathBuf> {
+        let env = env.unwrap_or(&*self.env);
+        if let Some(adapter) = multi(kind) {
+            return adapter
+                .files(&self.home, env)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+        }
+        if kind == ToolKind::DeepseekHarness {
+            return dsh::files(&dsh::home(&self.home, env))
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+        }
+        vec![kind.config_path(&self.home, env)]
+    }
+
+    /// 配置文件里现在的连接（体检时和终端里的环境变量比较；里面有 Key，不要交给界面）。
+    pub(crate) fn current(&self, kind: ToolKind) -> Result<Connection, ConfigError> {
+        self.connection(kind)
+    }
+
+    /// 应用自己看到的环境变量。
+    pub fn env_var(&self, name: &str) -> Option<String> {
+        (self.env)(name)
+    }
+
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// 用 TransitLink 配置着的工具（还原过的不算）。

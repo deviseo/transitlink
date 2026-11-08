@@ -37,6 +37,7 @@ const LOGOS: Record<ToolKind, { light: string; dark?: string }> = {
 };
 
 const SIZES = {
+  xs: "h-5 w-5 rounded-md p-[3px]",
   sm: "h-7 w-7 rounded-lg p-[5px]",
   md: "h-10 w-10 rounded-xl p-2",
   lg: "h-14 w-14 rounded-2xl p-[11px]",

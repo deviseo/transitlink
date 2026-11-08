@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 
 use super::http::{Http, JsonResponse, flag, number, text};
 use super::{
-    AccountSummary, Credential, GroupSummary, KeySummary, LoginStep, Platform, SiteError, SiteInfo,
-    absolute_url,
+    AccountSummary, Credential, GroupSummary, KeyStatus, KeySummary, LoginStep, Platform,
+    SiteError, SiteInfo, absolute_url,
 };
 
 /// 读取公开设置识别 sub2api。不是 sub2api 时返回 None。
@@ -194,8 +194,9 @@ pub async fn list_keys(
 ) -> Result<Vec<KeySummary>, SiteError> {
     let request = bearer(
         http.get(&format!(
-            "{}/api/v1/keys?page=1&page_size=100",
-            info.base_url
+            "{}/api/v1/keys?page=1&page_size={}",
+            info.base_url,
+            super::KEY_PAGE
         )),
         credential,
     );
@@ -236,13 +237,29 @@ fn key_summary(item: &Value, groups: &[GroupSummary]) -> Option<KeySummary> {
             .map(|group| group.name.clone())
             .unwrap_or_else(|| id.clone())
     });
+    let status = match text(item, "status").as_deref() {
+        Some("active") => KeyStatus::Active,
+        Some("expired") => KeyStatus::Expired,
+        Some("quota_exhausted") => KeyStatus::Exhausted,
+        _ => KeyStatus::Disabled,
+    };
+    // quota 是美元额度上限，0 表示不限。
+    let quota = number(item, "quota").unwrap_or(0.0);
     Some(KeySummary {
         id: text(item, "id")?,
         name: text(item, "name").unwrap_or_default(),
         key: text(item, "key").unwrap_or_default(),
         masked: false,
         group,
-        enabled: text(item, "status").as_deref() == Some("active"),
+        enabled: status == KeyStatus::Active,
+        status,
+        remaining_usd: (quota > 0.0)
+            .then(|| (quota - number(item, "quota_used").unwrap_or(0.0)).max(0.0)),
+        expires_at: text(item, "expires_at").and_then(|time| {
+            chrono::DateTime::parse_from_rfc3339(&time)
+                .ok()
+                .map(|time| time.timestamp())
+        }),
     })
 }
 
@@ -273,6 +290,7 @@ pub async fn groups(
                 description: text(group, "description").unwrap_or_default(),
                 ratio: number(group, "rate_multiplier"),
                 platform: text(group, "platform"),
+                subscription: text(group, "subscription_type").as_deref() == Some("subscription"),
             })
         })
         .collect())
@@ -307,6 +325,41 @@ pub async fn create_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_carry_status_quota_and_expiry() {
+        let limited = key_summary(
+            &json!({ "id": 1, "name": "cc", "key": "sk-x", "status": "quota_exhausted",
+                     "quota": 10, "quota_used": 12.5, "expires_at": "2026-12-31T16:00:00+08:00" }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(limited.status, KeyStatus::Exhausted);
+        assert!(!limited.enabled);
+        assert_eq!(limited.remaining_usd, Some(0.0));
+        assert_eq!(
+            limited.expires_at,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-12-31T08:00:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        let unlimited = key_summary(
+            &json!({ "id": 2, "name": "cx", "key": "sk-y", "status": "active", "quota": 0, "quota_used": 3, "expires_at": null }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(unlimited.status, KeyStatus::Active);
+        assert_eq!(unlimited.remaining_usd, None);
+        assert_eq!(unlimited.expires_at, None);
+        let partly = key_summary(
+            &json!({ "id": 3, "key": "sk-z", "status": "active", "quota": 5, "quota_used": 1.5 }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(partly.remaining_usd, Some(3.5));
+    }
     use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

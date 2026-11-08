@@ -2,17 +2,25 @@ import { useState, type SubmitEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, KeyRound, LoaderCircle, Plus } from "lucide-react";
-import { Badge } from "../ui/badge";
+import { Badge, type Tone } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { copySiteKey, createSiteKey, siteGroups, siteKeys, type KeySummary } from "../../lib/api";
+import { copySiteKey, createSiteKey, siteGroups, siteKeys, type KeyStatus, type KeySummary } from "../../lib/api";
+
+const statusTone: Record<KeyStatus, Tone> = { active: "success", disabled: "neutral", expired: "warning", exhausted: "warning" };
 import { errorText } from "../../lib/errors";
 
 /** 某个站点的 Key 列表和新建 Key（密钥页）。列表里的 Key 都是打码的，复制时由桌面端取完整 Key 写进剪贴板。 */
 export function KeysPanel({ siteId }: { siteId: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const keys = useQuery({ queryKey: ["site-keys", siteId], queryFn: () => siteKeys(siteId) });
+  const money = new Intl.NumberFormat(i18n.language, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+  const limits = (key: KeySummary) =>
+    [
+      key.remainingUsd != null ? t("keys.remaining", { amount: money.format(key.remainingUsd) }) : null,
+      key.expiresAt != null ? t("keys.expires", { date: new Date(key.expiresAt * 1000).toLocaleDateString(i18n.language) }) : null,
+    ].filter(Boolean);
   const groups = useQuery({ queryKey: ["site-groups", siteId], queryFn: () => siteGroups(siteId) });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("TransitLink");
@@ -104,10 +112,15 @@ export function KeysPanel({ siteId }: { siteId: string }) {
               <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
               <div className="min-w-0 flex-1">
                 <p className="truncate">{key.name || t("keys.unnamed")}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">{key.key}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  <span className="font-mono">{key.key}</span>
+                  {limits(key).map((limit) => (
+                    <span key={limit}> · {limit}</span>
+                  ))}
+                </p>
               </div>
               {key.group && <Badge>{key.group}</Badge>}
-              <Badge tone={key.enabled ? "success" : "neutral"}>{key.enabled ? t("keys.enabled") : t("keys.disabled")}</Badge>
+              <Badge tone={statusTone[key.status]}>{t(`keys.status.${key.status}`)}</Badge>
               <CopyKeyButton siteId={siteId} keyId={key.id} onError={setCopyError} />
             </li>
           ))}

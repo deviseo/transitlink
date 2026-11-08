@@ -72,7 +72,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
     // 一个一个来：每个工具都要建 Key、测试、写配置。
     for (const kind of picked) {
       try {
-        // 站长推荐了模型就用它（所选分组没有这个模型时，桌面端会自动换一个）。
+        // 站长推荐的（或者上次在这个站点选的）模型（所选分组没有这个模型时，桌面端会自动换一个）。
         const model = plan.data?.tools.find((tool) => tool.kind === kind)?.recommendedModel ?? null;
         const outcome = await applyTool(kind, siteId, groupFor(kind) || null, model);
         setRuns((current) => ({ ...current, [kind]: { status: "done", outcome } }));
@@ -83,6 +83,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
     setPhase("done");
     void queryClient.invalidateQueries({ queryKey: ["tools"] });
     void queryClient.invalidateQueries({ queryKey: ["site-keys", siteId] });
+    void queryClient.invalidateQueries({ queryKey: ["pending-restore"] });
   };
 
   // 配置进行中不能关掉窗口（Esc 或点遮罩），免得以为中断了。
@@ -168,7 +169,7 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                           {plan.data.groups.map((group) => (
                             <option key={group.id} value={group.id}>
                               {groupLabel(group)}
-                              {toolPlan?.matched && toolPlan.recommendedGroup === group.id ? ` · ${t("setup.recommendedTag")}` : ""}
+                              {toolPlan?.matched && toolPlan.recommendedGroup === group.id ? ` · ${t(toolPlan.remembered ? "setup.rememberedTag" : "setup.recommendedTag")}` : ""}
                             </option>
                           ))}
                         </select>
@@ -183,7 +184,9 @@ export function SetupDialog({ open, onClose, only, initialSiteId }: { open: bool
                         </p>
                       )}
                       {chosen[kind] && toolPlan?.recommendedModel && (
-                        <p className="mt-2 text-xs text-muted-foreground">{t("setup.recommendedModel", { model: toolPlan.recommendedModel })}</p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {t(toolPlan.remembered ? "setup.rememberedModel" : "setup.recommendedModel", { model: toolPlan.recommendedModel })}
+                        </p>
                       )}
                       {chosen[kind] && !installed && <p className="mt-2 text-xs text-muted-foreground">{t("setup.notInstalled")}</p>}
                     </li>

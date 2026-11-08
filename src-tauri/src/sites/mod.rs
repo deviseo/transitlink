@@ -145,6 +145,18 @@ pub struct AccountSummary {
     pub balance_usd: f64,
 }
 
+/// Key 在站点上的状态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyStatus {
+    #[default]
+    Active,
+    Disabled,
+    Expired,
+    /// 额度用完了。
+    Exhausted,
+}
+
 /// 一个 API Key。列表里的 Key 可能是打码的（new-api），配置工具前再取完整的。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,9 +167,25 @@ pub struct KeySummary {
     pub masked: bool,
     pub group: Option<String>,
     pub enabled: bool,
+    pub status: KeyStatus,
+    /// 剩余额度（美元）；None 表示不限额度。
+    pub remaining_usd: Option<f64>,
+    /// 到期时间（Unix 秒）；None 表示永不过期。
+    pub expires_at: Option<i64>,
 }
 
+/// Key 列表只取第一页这么多个（两边都用这个页大小）。列表满了时，找不到某个 Key 不代表它被删了。
+pub const KEY_PAGE: usize = 100;
+
 impl KeySummary {
+    /// 现在能用：启用中、没到期、还有额度。站点列表里的状态不一定及时：sub2api 到期的 Key 状态还是
+    /// active，请求时才拒绝（403 API_KEY_EXPIRED）。
+    pub fn usable(&self, now: i64) -> bool {
+        self.status == KeyStatus::Active
+            && self.expires_at.is_none_or(|at| at > now)
+            && self.remaining_usd.is_none_or(|left| left > 0.0)
+    }
+
     /// 给列表看的版本：完整 Key 只露出首尾几位，要用时再单独取（例如复制）。
     pub fn for_display(self) -> Self {
         if self.masked {
@@ -201,6 +229,8 @@ pub struct GroupSummary {
     pub ratio: Option<f64>,
     /// sub2api 分组的平台（anthropic、openai、gemini……）；new-api 没有。
     pub platform: Option<String>,
+    /// sub2api 的订阅分组：用订阅的额度，不扣余额（余额是 0 也照样能用）。
+    pub subscription: bool,
 }
 
 /// 规范化站点地址：补全协议，只保留协议、主机和端口。
@@ -241,6 +271,26 @@ pub async fn detect(http: &Http, input: &str) -> Result<SiteInfo, SiteError> {
         Ok(None) => Err(SiteError::Unsupported),
         Err(error) => Err(error),
     }
+}
+
+/// 体检用：请求一次站点的公开接口（sub2api 的公开设置、new-api 的 /api/status），看连不连得上。
+/// 站点有响应（哪怕是错误页）就算连上了；5xx 说明站点自己出了问题。
+pub async fn ping(http: &Http, info: &SiteInfo) -> Result<(), SiteError> {
+    let path = match info.platform {
+        Platform::Sub2api => "/api/v1/settings/public",
+        Platform::Newapi => "/api/status",
+    };
+    let response = match http
+        .send(http.get(&format!("{}{path}", info.base_url)))
+        .await
+    {
+        Err(SiteError::RateLimited) => return Ok(()),
+        other => other?,
+    };
+    if response.status >= 500 {
+        return Err(SiteError::Site(Some(format!("HTTP {}", response.status))));
+    }
+    Ok(())
 }
 
 /// 把站点返回的 logo 地址转成绝对地址。
@@ -309,6 +359,9 @@ mod tests {
             masked: false,
             group: None,
             enabled: true,
+            status: KeyStatus::Active,
+            remaining_usd: None,
+            expires_at: None,
         };
         let shown = key.for_display();
         assert_eq!(shown.key, "sk-abcd**********wxyz");

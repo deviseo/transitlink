@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, LifeBuoy, LoaderCircle, MessagesSquare, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { NewTicketDialog } from "../components/tickets/NewTicketDialog";
+import type { TicketDraft } from "../components/health/CheckupDialog";
 import { StatusBadge, TicketConsent, TicketProblem } from "../components/tickets/parts";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -22,11 +23,22 @@ export function TicketsPage() {
   const site = current?.config?.tickets?.enabled ? current : undefined;
   const allowed = site?.ticketsAllowed === true;
   const list = useQuery({ ...ticketListQuery(site?.id ?? ""), enabled: allowed });
-  const [creating, setCreating] = useState(false);
+  // 从体检过来：带着报告直接新建工单（还没确认工单服务时，确认后再打开）。
+  const location = useLocation();
+  const [draft, setDraft] = useState<TicketDraft | null>(() => (location.state as { draft?: TicketDraft } | null)?.draft ?? null);
+  const [creating, setCreating] = useState(draft !== null);
+  const closeNew = () => {
+    setCreating(false);
+    setDraft(null);
+    void navigate(".", { replace: true, state: null });
+  };
 
   const onCreated = (ticket: TicketDetail) => {
     if (!site) return;
     setCreating(false);
+    setDraft(null);
+    // 先清掉这一页的草稿，返回时不会再打开一个填好的新工单。
+    void navigate(".", { replace: true, state: null });
     queryClient.setQueryData(ticketKeys.detail(site.id, ticket.id), ticket);
     queryClient.setQueryData<TicketList>(ticketKeys.list(site.id), (current) => syncList(current, ticket));
     void navigate(`/tickets/${site.id}/${ticket.id}`);
@@ -114,7 +126,9 @@ export function TicketsPage() {
         </Card>
       )}
 
-      {creating && site && allowed && <NewTicketDialog site={site} onClose={() => setCreating(false)} onCreated={onCreated} />}
+      {creating && site && allowed && (
+        <NewTicketDialog site={site} onClose={closeNew} onCreated={onCreated} initialTitle={draft?.title} initialBody={draft?.body} />
+      )}
     </div>
   );
 }
